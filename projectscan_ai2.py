@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ProjectScan v5.1c — Line-number Diff + GitHub Auto-sync (branch fix)
+ProjectScan v5.1d — Line-number Diff + GitHub Auto-sync (pull-before-push)
 All modifications via line numbers. Includes GitHub commit/push after diff apply.
 """
 """
@@ -894,7 +894,6 @@ class GitHubUploader:
                 shutil.rmtree(td, ignore_errors=True)
             except Exception:
                 pass
-
     def init_local_repo(self, project_path, repo_name):
         """Initialize local git repo and set remote if needed."""
         git_dir = os.path.join(project_path, '.git')
@@ -919,22 +918,77 @@ class GitHubUploader:
             self.log(f"remote set: {remote_url}")
         else:
             self.log(f"remote exists: {out}")
-        # Detect remote default branch and align local branch
-        ok_rb, rb_out, _ = self.run_cmd(
-            f'{self.GH_PATH} repo view {repo_name} --json defaultBranchRef -q .defaultBranchRef.name')
-        remote_branch = rb_out.strip() if ok_rb and rb_out and rb_out.strip() else 'master'
-        self.log(f"remote default branch: {remote_branch}")
-        # Get current local branch name
-        ok_lb, lb_out, _ = self.run_cmd('git branch --show-current', cwd=project_path)
-        local_branch = lb_out.strip() if ok_lb and lb_out and lb_out.strip() else ''
-        if local_branch and local_branch != remote_branch:
-            self.log(f"renaming local branch {local_branch} -> {remote_branch}")
-            self.run_cmd(f'git branch -M {remote_branch}', cwd=project_path)
-        # Try to pull remote history (allow unrelated histories for first sync)
-        self.run_cmd(
-            f'git pull origin {remote_branch} --allow-unrelated-histories --no-edit',
-            cwd=project_path)
 
+    def _get_local_branch(self, project_path):
+        """Get current local branch name."""
+        ok, out, _ = self.run_cmd('git branch --show-current', cwd=project_path)
+        if ok and out and out.strip():
+            return out.strip()
+        return 'master'
+
+    def sync_push(self, project_path, message, progress_cb=None):
+        """Stage all, commit with message, push to origin. Pull if needed."""
+        if progress_cb:
+            progress_cb(10)
+        self.run_cmd('git add -A', cwd=project_path)
+        ok_diff, out_diff, _ = self.run_cmd(
+            'git diff --cached --stat', cwd=project_path)
+        has_staged = bool(out_diff and out_diff.strip())
+        if has_staged:
+            if progress_cb:
+                progress_cb(20)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            full_msg = f"{message} [{ts}]"
+            safe_msg = full_msg.replace('"', '\\"')
+            ok_c, _, _ = self.run_cmd(
+                f'git commit -m "{safe_msg}"', cwd=project_path)
+            if not ok_c:
+                return False, "commit failed"
+        else:
+            full_msg = message
+            self.log("no new staged changes")
+        if progress_cb:
+            progress_cb(40)
+        # Check for unpushed commits
+        branch = self._get_local_branch(project_path)
+        has_unpushed = False
+        ok_log, log_out, _ = self.run_cmd(
+            f'git log --oneline @{{u}}..HEAD', cwd=project_path)
+        if ok_log and log_out and log_out.strip():
+            has_unpushed = True
+        else:
+            ok_any, any_out, _ = self.run_cmd(
+                'git log --oneline -1', cwd=project_path)
+            if ok_any and any_out and any_out.strip():
+                has_unpushed = True
+        if not has_staged and not has_unpushed:
+            self.log("nothing to commit or push")
+            if progress_cb:
+                progress_cb(100)
+            return True, "(no changes)"
+        # Try push
+        if progress_cb:
+            progress_cb(60)
+        ok_p, out_p, err_p = self.run_cmd(
+            f'git push -u origin {branch}', cwd=project_path)
+        # If rejected, pull then retry
+        if not ok_p and 'rejected' in (err_p or ''):
+            self.log("push rejected, pulling remote changes first...")
+            self.run_cmd(
+                f'git pull origin {branch} --allow-unrelated-histories --no-edit',
+                cwd=project_path)
+            if progress_cb:
+                progress_cb(80)
+            ok_p, out_p, err_p = self.run_cmd(
+                f'git push -u origin {branch}', cwd=project_path)
+        if progress_cb:
+            progress_cb(100)
+        if ok_p:
+            self.log(f"pushed: {full_msg}")
+            return True, full_msg
+        else:
+            self.log(f"push failed: {err_p}")
+            return False, err_p
     def sync_push(self, project_path, message, progress_cb=None):
         """Stage all, commit with message, push to origin. Always push unpushed commits."""
         if progress_cb:
@@ -957,12 +1011,12 @@ class GitHubUploader:
             full_msg = message
             self.log("no new staged changes")
         if progress_cb:
-            progress_cb(50)
+#  8. ProjectScan v5.1d — Main Application
         # Check for unpushed commits (upstream may not exist yet)
         has_unpushed = False
         ok_log, log_out, _ = self.run_cmd(
             'git log --oneline @{u}..HEAD', cwd=project_path)
-        if ok_log and log_out and log_out.strip():
+        self.root.title("ProjectScan v5.1d")
             has_unpushed = True
         else:
             # No upstream set — check if any local commits exist at all
