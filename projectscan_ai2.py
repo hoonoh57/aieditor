@@ -1,8 +1,9 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ProjectScan v5.1b — Line-number Diff + GitHub Auto-sync (push fix)
+ProjectScan v5.1c — Line-number Diff + GitHub Auto-sync (branch fix)
 All modifications via line numbers. Includes GitHub commit/push after diff apply.
+"""
 """
 
 import os
@@ -905,6 +906,7 @@ class GitHubUploader:
                     f.write("*.bak\n*.bak*\n__pycache__/\n.vs/\n")
             self.run_cmd('git add -A', cwd=project_path)
             self.run_cmd('git commit -m "init by ProjectScan"', cwd=project_path)
+        # Ensure remote is set
         ok, out, _ = self.run_cmd('git remote get-url origin', cwd=project_path)
         if not ok:
             ok_u, user, _ = self.run_cmd(
@@ -917,6 +919,21 @@ class GitHubUploader:
             self.log(f"remote set: {remote_url}")
         else:
             self.log(f"remote exists: {out}")
+        # Detect remote default branch and align local branch
+        ok_rb, rb_out, _ = self.run_cmd(
+            f'{self.GH_PATH} repo view {repo_name} --json defaultBranchRef -q .defaultBranchRef.name')
+        remote_branch = rb_out.strip() if ok_rb and rb_out and rb_out.strip() else 'master'
+        self.log(f"remote default branch: {remote_branch}")
+        # Get current local branch name
+        ok_lb, lb_out, _ = self.run_cmd('git branch --show-current', cwd=project_path)
+        local_branch = lb_out.strip() if ok_lb and lb_out and lb_out.strip() else ''
+        if local_branch and local_branch != remote_branch:
+            self.log(f"renaming local branch {local_branch} -> {remote_branch}")
+            self.run_cmd(f'git branch -M {remote_branch}', cwd=project_path)
+        # Try to pull remote history (allow unrelated histories for first sync)
+        self.run_cmd(
+            f'git pull origin {remote_branch} --allow-unrelated-histories --no-edit',
+            cwd=project_path)
 
     def sync_push(self, project_path, message, progress_cb=None):
         """Stage all, commit with message, push to origin. Always push unpushed commits."""
@@ -957,12 +974,12 @@ class GitHubUploader:
             self.log("nothing to commit or push")
             if progress_cb:
                 progress_cb(100)
-            return True, "(no changes)"
+#  8. ProjectScan v5.1c — Main Application
         # Push
         if progress_cb:
             progress_cb(70)
         ok_p, out_p, err_p = self.run_cmd(
-            'git push -u origin master', cwd=project_path)
+        self.root.title("ProjectScan v5.1c")
         if not ok_p:
             ok_p, out_p, err_p = self.run_cmd(
                 'git push -u origin main', cwd=project_path)
