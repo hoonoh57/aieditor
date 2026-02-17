@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ProjectScan v5.1 — Line-number Diff + GitHub Auto-sync
+ProjectScan v5.1b — Line-number Diff + GitHub Auto-sync (push fix)
 All modifications via line numbers. Includes GitHub commit/push after diff apply.
 """
 
@@ -919,28 +919,48 @@ class GitHubUploader:
             self.log(f"remote exists: {out}")
 
     def sync_push(self, project_path, message, progress_cb=None):
-        """Stage all, commit with message, push to origin."""
+        """Stage all, commit with message, push to origin. Always push unpushed commits."""
         if progress_cb:
             progress_cb(10)
         self.run_cmd('git add -A', cwd=project_path)
         ok_diff, out_diff, _ = self.run_cmd(
             'git diff --cached --stat', cwd=project_path)
-        if not out_diff or not out_diff.strip():
-            self.log("no changes to commit")
+        has_staged = bool(out_diff and out_diff.strip())
+        if has_staged:
+            if progress_cb:
+                progress_cb(30)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            full_msg = f"{message} [{ts}]"
+            safe_msg = full_msg.replace('"', '\\"')
+            ok_c, _, _ = self.run_cmd(
+                f'git commit -m "{safe_msg}"', cwd=project_path)
+            if not ok_c:
+                return False, "commit failed"
+        else:
+            full_msg = message
+            self.log("no new staged changes")
+        if progress_cb:
+            progress_cb(50)
+        # Check for unpushed commits (upstream may not exist yet)
+        has_unpushed = False
+        ok_log, log_out, _ = self.run_cmd(
+            'git log --oneline @{u}..HEAD', cwd=project_path)
+        if ok_log and log_out and log_out.strip():
+            has_unpushed = True
+        else:
+            # No upstream set — check if any local commits exist at all
+            ok_any, any_out, _ = self.run_cmd(
+                'git log --oneline -1', cwd=project_path)
+            if ok_any and any_out and any_out.strip():
+                has_unpushed = True
+        if not has_staged and not has_unpushed:
+            self.log("nothing to commit or push")
             if progress_cb:
                 progress_cb(100)
             return True, "(no changes)"
+        # Push
         if progress_cb:
-            progress_cb(30)
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        full_msg = f"{message} [{ts}]"
-        safe_msg = full_msg.replace('"', '\\"')
-        ok_c, _, _ = self.run_cmd(
-            f'git commit -m "{safe_msg}"', cwd=project_path)
-        if not ok_c:
-            return False, "commit failed"
-        if progress_cb:
-            progress_cb(60)
+            progress_cb(70)
         ok_p, out_p, err_p = self.run_cmd(
             'git push -u origin master', cwd=project_path)
         if not ok_p:
@@ -957,12 +977,12 @@ class GitHubUploader:
 
 
 # ════════════════════════════════════════════════════════════
-#  8. ProjectScan v5.0 — Main Application
+#  8. ProjectScan v5.1b — Main Application
 # ════════════════════════════════════════════════════════════
 class ProjectScan:
     def __init__(self, root):
         self.root = root
-        self.root.title("ProjectScan v5.1")
+        self.root.title("ProjectScan v5.1b")
         self.root.geometry("1350x950")
         self.root.configure(bg='#1e1e2e')
 
@@ -998,7 +1018,6 @@ class ProjectScan:
             '*.env','.env','*.pem','*.key','*.pfx','id_rsa','*password*',
             '*secret*','appsettings.Development.json','secrets.json','web.config']
 
-        self.diff_engine = LineDiffEngine()
         self.diff_engine = LineDiffEngine()
         self.uploader = GitHubUploader()
         self._last_saved_files = []
@@ -1450,27 +1469,28 @@ class ProjectScan:
             parts.append("=== END FILE ===")
             parts.append("```")
             parts.append("")
-        parts.append("- Line numbers refer to the ORIGINAL file (shown as N| prefix)")
-        parts.append("- @@ START-END REPLACE : replace lines START through END with new content")
-        parts.append("- @@ N DELETE COUNT : delete COUNT lines starting from line N")
-        parts.append("- @@ N INSERT : insert new content AFTER line N (use 0 to insert at top)")
-        parts.append("- Each REPLACE/INSERT block must end with @@ END")
-        parts.append("- Do NOT use SEARCH/REPLACE blocks. Use ONLY @@ line commands.")
-        parts.append("- After making changes, state the REASON for each modification so it can be used as a GitHub commit message.")
-        parts.append("---")
+            parts.append("Rules:")
+            parts.append("- Line numbers refer to the ORIGINAL file (shown as N| prefix)")
+            parts.append("- @@ START-END REPLACE : replace lines START through END with new content")
+            parts.append("- @@ N DELETE COUNT : delete COUNT lines starting from line N")
+            parts.append("- @@ N INSERT : insert new content AFTER line N (use 0 to insert at top)")
+            parts.append("- Each REPLACE/INSERT block must end with @@ END")
+            parts.append("- Do NOT use SEARCH/REPLACE blocks. Use ONLY @@ line commands.")
+            parts.append("- After making changes, state the REASON for each modification so it can be used as a GitHub commit message.")
+            parts.append("---")
 
-        for i, (rel, full, sz) in enumerate(files, 1):
-            try:
-                content, *_ = EncodingHandler.read_file(full)
-            except:
-                content = "(read error)"
-            ext = os.path.splitext(rel)[1].lstrip('.')
-            parts.append(f"### File {i}: {rel}")
-            parts.append(f"```{ext}")
-            for ln_num, line in enumerate(content.split('\n'), 1):
-                parts.append(f"{ln_num:4d}| {line}")
-            parts.append("```")
-            parts.append("")
+            for i, (rel, full, sz) in enumerate(files, 1):
+                try:
+                    content, *_ = EncodingHandler.read_file(full)
+                except Exception:
+                    content = "(read error)"
+                ext = os.path.splitext(rel)[1].lstrip('.')
+                parts.append(f"### File {i}: {rel}")
+                parts.append(f"```{ext}")
+                for ln_num, line in enumerate(content.split('\n'), 1):
+                    parts.append(f"{ln_num:4d}| {line}")
+                parts.append("```")
+                parts.append("")
 
         if not parts:
             messagebox.showwarning("warning", "enter prompt or attach files"); return
