@@ -529,6 +529,15 @@ class LineDiffEngine:
                     r['encoding'], r['has_bom'], r['line_ending'])
                 r['messages'].append(f"[SAVED] backup: {os.path.basename(bp)}")
                 saved += 1
+                # Syntax validation for Python files
+                if r['resolved_path'].endswith('.py'):
+                    try:
+                        import py_compile
+                        py_compile.compile(r['resolved_path'], doraise=True)
+                        r['messages'].append("[SYNTAX OK]")
+                    except py_compile.PyCompileError as pe:
+                        r['messages'].append(f"[SYNTAX ERROR] {pe}")
+                        r['syntax_error'] = True
             except Exception as e:
                 r['messages'].append(f"[X] save error: {e}")
                 r['success'] = False
@@ -1435,6 +1444,15 @@ class ProjectScan:
         messagebox.showinfo("Done",
             f"Saved: {summary['saved']}\nFailed: {summary['failed']}\nSkipped: {summary['skipped']}")
         self.status_var.set(f"multi: saved {summary['saved']} failed {summary['failed']}")
+        # Check for syntax errors before auto-sync
+        has_syntax_error = any(r.get('syntax_error') for r in results)
+        if has_syntax_error:
+            messagebox.showwarning("Syntax Error",
+                "Syntax errors detected in saved files.\n"
+                "Auto-sync skipped to prevent pushing broken code.\n"
+                "Fix errors and sync manually.")
+            self.status_var.set("syntax error — auto-sync skipped")
+            return
         if self.auto_sync.get() and summary['saved'] > 0:
             file_list = ', '.join(self._last_saved_files[:5])
             if len(self._last_saved_files) > 5:
