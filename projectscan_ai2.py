@@ -983,32 +983,14 @@ class GitHubUploader:
         if progress_cb:
             progress_cb(40)
 
-        # 6. Pull before push (prevents rejection due to remote ahead)
-        self.log(f"pulling origin/{branch} before push...")
-        self.run_cmd(
-            f'git pull origin {branch} --allow-unrelated-histories --no-edit',
-            cwd=project_path)
-
-        if progress_cb:
-            progress_cb(70)
-
-        # 7. Push
+        # 6. Push (force push — no pull to avoid merge conflicts in files)
+        self.log(f"pushing to origin/{branch}...")
         ok_p, out_p, err_p = self.run_cmd(
-            f'git push -u origin {branch}', cwd=project_path)
-        if ok_p:
-            self.log(f"pushed to {branch}: {full_msg}")
-            if progress_cb:
-                progress_cb(100)
-            return True, full_msg
-
-        # 8. If normal push failed, try force push as last resort
-        self.log(f"push rejected, trying force push...")
-        ok_f, _, err_f = self.run_cmd(
             f'git push -u origin {branch} --force', cwd=project_path)
         if progress_cb:
             progress_cb(100)
-        if ok_f:
-            self.log(f"force pushed to {branch}: {full_msg}")
+        if ok_p:
+            self.log(f"pushed to {branch}: {full_msg}")
             return True, full_msg
 
         self.log(f"push failed: {err_p}")
