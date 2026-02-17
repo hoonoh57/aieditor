@@ -821,7 +821,8 @@ class GitHubUploader:
         self.log(f"$ {cmd}")
         try:
             r = subprocess.run(cmd, shell=True, cwd=cwd,
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, timeout=60,
+                               encoding='utf-8', errors='replace')
             out = r.stdout.strip() if r.stdout else ''
             err = r.stderr.strip() if r.stderr else ''
             if out:
