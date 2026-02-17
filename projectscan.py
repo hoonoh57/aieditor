@@ -325,7 +325,8 @@ class ProjectScan:
         pm = {r: f for r, f, *_ in self.all_files}
         a = self.diff_engine.analyze(dt, pm)
         fmt_n = {'unrecognized': '[X] unrecognized', 'single_file': 'single file',
-                 'single_file_named': 'single file (named)', 'multi_file': 'multi file'}
+                 'single_file_named': 'single file (named)', 'multi_file': 'multi file',
+                 'file_ops_only': 'file operations only'}
         lines = [f"Format: {fmt_n.get(a['format'], '?')}",
                  f"Files: {a['file_count']} | Changes: {a['total_changes']}"]
         for f in a['files']:
@@ -351,8 +352,8 @@ class ProjectScan:
             messagebox.showwarning("warning", "diff is empty"); return
         if not self._current_file_path:
             messagebox.showwarning("warning", "open a file first"); return
-        parsed = self.diff_engine.parse(dt)
-        if not parsed:
+        parsed, file_ops = self.diff_engine.parse(dt)
+        if not parsed and not file_ops:
             messagebox.showerror("parse error",
                 "no @@ commands found.\n\n"
                 "Format:\n"
@@ -388,9 +389,9 @@ class ProjectScan:
             messagebox.showwarning("warning", "select project folder first"); return
         pm = {r: f for r, f, *_ in self.all_files}
 
-        parsed = self.diff_engine.parse(dt)
+        parsed, file_ops = self.diff_engine.parse(dt)
 
-        if not parsed:
+        if not parsed and not file_ops:
             # 디버그: 토큰 감지 정보
             text = TextNormalizer.full(dt)
             tlines = text.split('\n')
@@ -418,7 +419,7 @@ class ProjectScan:
 
         a = self.diff_engine.analyze(dt, pm)
 
-        if a['total_changes'] == 0:
+        if a['total_changes'] == 0 and not a.get('file_ops'):
             messagebox.showwarning("warning", "no valid changes"); return
 
         # Confirmation dialog
@@ -445,7 +446,8 @@ class ProjectScan:
         results, summary = self.diff_engine.apply_and_save(dt, pm, pp)
 
         log_lines = ["=" * 55, "Multi-file Diff Result",
-            f"saved:{summary['saved']} failed:{summary['failed']} skipped:{summary['skipped']}",
+            f"saved:{summary['saved']} failed:{summary['failed']} skipped:{summary['skipped']}"
+            f" created:{summary.get('created',0)} deleted:{summary.get('deleted',0)}",
             "=" * 55]
         for r in results:
             log_lines.append(f"\n{r['filepath']}")
@@ -471,8 +473,12 @@ class ProjectScan:
                     break
         self._last_saved_files = [r['filepath'] for r in results if r['success']]
         messagebox.showinfo("Done",
-            f"Saved: {summary['saved']}\nFailed: {summary['failed']}\nSkipped: {summary['skipped']}")
-        self.status_var.set(f"multi: saved {summary['saved']} failed {summary['failed']}")
+            f"Saved: {summary['saved']}\nCreated: {summary.get('created',0)}\n"
+            f"Deleted: {summary.get('deleted',0)}\nFailed: {summary['failed']}\n"
+            f"Skipped: {summary['skipped']}")
+        self.status_var.set(
+            f"multi: saved {summary['saved']} created {summary.get('created',0)} "
+            f"deleted {summary.get('deleted',0)} failed {summary['failed']}")
         # Check for syntax errors before auto-sync
         has_syntax_error = any(r.get('syntax_error') for r in results)
         if has_syntax_error:
@@ -482,7 +488,7 @@ class ProjectScan:
                 "Fix errors and sync manually.")
             self.status_var.set("syntax error — auto-sync skipped")
             return
-        if self.auto_sync.get() and summary['saved'] > 0:
+        if self.auto_sync.get() and (summary['saved'] > 0 or summary.get('created',0) > 0 or summary.get('deleted',0) > 0):
             file_list = ', '.join(self._last_saved_files[:5])
             if len(self._last_saved_files) > 5:
                 file_list += f" +{len(self._last_saved_files)-5} more"

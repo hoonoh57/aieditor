@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+import os
+
+content = r'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 diff_engine.py — Line-number based diff parser and engine for ProjectScan v6.0
@@ -522,3 +524,11 @@ class LineDiffEngine:
             if rl.endswith(nl) or nl.endswith(rl):
                 return a
         return None
+'''
+
+path = os.path.join(r"E:\genspark\core", "diff_engine.py")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+print(f"Created: {path}")
+print(f"Size: {os.path.getsize(path)} bytes")
+print(f"Lines: {len(content.splitlines())}")
