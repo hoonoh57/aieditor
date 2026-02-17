@@ -84,8 +84,6 @@ class ProjectScan:
         self._last_saved_files = []
         self._setup_styles()
         self._build_ui()
-        self._setup_styles()
-        self._build_ui()
 
     def _setup_styles(self):
         style = ttk.Style()

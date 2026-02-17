@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 code_reviewer.py — Automated code review skill for ProjectScan v6.0
@@ -236,8 +236,13 @@ class CodeReviewer:
     def _check_python_syntax(self, fp, content):
         """Check Python syntax using ast.parse."""
         issues = []
+        # Strip BOM before parsing (common in Windows UTF-8 files)
+        clean = content.lstrip('\ufeff')
+        if content.startswith('\ufeff'):
+            issues.append(self._issue(fp, 1, self.INFO, 'I003',
+                'File has UTF-8 BOM marker (normal for Windows)'))
         try:
-            ast.parse(content, filename=fp)
+            ast.parse(clean, filename=fp)
         except SyntaxError as e:
             ln = e.lineno or 0
             msg = e.msg if hasattr(e, 'msg') else str(e)
