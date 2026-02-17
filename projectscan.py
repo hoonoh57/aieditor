@@ -111,6 +111,7 @@ class ProjectScan:
         ttk.Button(scan_bar, text="[Scan VS Project]", style='Accent.TButton', command=self._scan_vs).pack(side='left', padx=2)
         ttk.Button(scan_bar, text="[Check All]", style='Dark.TButton', command=lambda: self.tree.check_all()).pack(side='left', padx=2)
         ttk.Button(scan_bar, text="[Uncheck All]", style='Dark.TButton', command=lambda: self.tree.uncheck_all()).pack(side='left', padx=2)
+        ttk.Button(scan_bar, text="[New Project]", style='Dark.TButton', command=self._new_project).pack(side='left', padx=8)
 
         main = ttk.PanedWindow(self.root, orient='horizontal')
         main.pack(fill='both', expand=True, padx=5, pady=3)
@@ -160,6 +161,7 @@ class ProjectScan:
         p_chk.pack(fill='x', padx=3)
         ttk.Checkbutton(p_chk, text="Attach checked files", variable=self.attach_file, style='Dark.TCheckbutton').pack(side='left')
         ttk.Button(p_chk, text="[Copy to Clipboard]", style='Accent.TButton', command=self._merge_and_copy).pack(side='right', padx=2)
+        ttk.Button(p_chk, text="[Scaffold Prompt]", style='Dark.TButton', command=self._scaffold_prompt).pack(side='right', padx=2)
         ttk.Label(tab_prompt, text="Preview:", style='Dark.TLabel').pack(anchor='w', padx=3, pady=2)
         self.preview_text = scrolledtext.ScrolledText(tab_prompt, bg='#181825', fg='#6c7086', font=('Consolas', 9), state='disabled', insertbackground='#f5e0dc')
         self.preview_text.pack(fill='both', expand=True, padx=3, pady=2)
@@ -338,7 +340,108 @@ class ProjectScan:
             name = os.path.basename(self.code_editor.file_path)
             self.status_var.set("saved: " + name)
 
+    # -- New Project / Scaffold --
+
+    def _new_project(self):
+        """Create a new empty project folder and set it as current."""
+        folder = filedialog.askdirectory(title="Select or Create Project Folder")
+        if not folder:
+            return
+        if not os.path.exists(folder):
+            os.makedirs(folder, exist_ok=True)
+        self.project_path.set(folder)
+        self.all_files = []
+        for item in self.tree.get_children(''):
+            self.tree.delete(item)
+        self.status_var.set(f"new project: {folder}")
+        # Switch to Prompt tab and auto-generate scaffold prompt
+        self._scaffold_prompt()
+
+    def _scaffold_prompt(self):
+        """Generate a scaffold prompt that asks AI to create project structure."""
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first")
+            return
+
+        # Check if folder already has files
+        existing = []
+        if os.path.exists(pp):
+            for item in os.listdir(pp):
+                if not item.startswith('.') and item != '__pycache__':
+                    existing.append(item)
+
+        prompt_lines = [
+            "=== PROJECT SCAFFOLD REQUEST ===",
+            "",
+        ]
+
+        if existing:
+            prompt_lines.append(f"Existing project folder: {os.path.basename(pp)}")
+            prompt_lines.append(f"Current contents: {', '.join(existing[:20])}")
+            prompt_lines.append("")
+            prompt_lines.append("Based on the existing project, suggest additional files or restructuring.")
+        else:
+            prompt_lines.append(f"New empty project folder: {os.path.basename(pp)}")
+            prompt_lines.append("")
+            prompt_lines.append("Create a complete project structure for this project.")
+
+        prompt_lines.extend([
+            "",
+            "Please describe:",
+            "1. What type of project? (e.g., Python CLI, Flask web app, React, Unity C#, etc.)",
+            "2. Main features or purpose",
+            "3. Any specific libraries or frameworks",
+            "",
+            "Then generate ALL files using this EXACT format:",
+            "",
+            "```",
+            "=== CREATE FILE: src/main.py ===",
+            "#!/usr/bin/env python3",
+            "# main entry point",
+            "",
+            "def main():",
+            "    pass",
+            "",
+            "if __name__ == '__main__':",
+            "    main()",
+            "=== END FILE ===",
+            "",
+            "=== CREATE FILE: src/utils/helper.py ===",
+            "# utility functions",
+            "=== END FILE ===",
+            "",
+            "=== CREATE FILE: requirements.txt ===",
+            "flask>=3.0",
+            "=== END FILE ===",
+            "",
+            "=== CREATE FILE: README.md ===",
+            "# Project Name",
+            "Description here",
+            "=== END FILE ===",
+            "```",
+            "",
+            "Rules:",
+            "- Use === CREATE FILE: path === and === END FILE === for EVERY file",
+            "- Include complete, working code in each file (no placeholders)",
+            "- Create proper folder structure with __init__.py where needed",
+            "- Include requirements.txt or package.json as appropriate",
+            "- Include a README.md with setup instructions",
+            "- Include .gitignore with common patterns",
+            "",
+            "=== END REQUEST ===",
+        ])
+
+        scaffold_text = '\n'.join(prompt_lines)
+
+        # Insert into prompt text area
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", scaffold_text)
+        self.notebook.select(2)  # Switch to Prompt tab
+        self.status_var.set("scaffold prompt generated — edit and copy to AI")
+
     # -- Diff --
+
 
     def _analyze_diff(self):
         dt = self.diff_text.get("1.0", tk.END).strip()

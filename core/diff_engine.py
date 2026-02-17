@@ -366,15 +366,27 @@ class LineDiffEngine:
                         rp = cand
                 if rp and os.path.exists(rp):
                     try:
-                        # Backup before delete
-                        bp = rp + '.deleted_bak'
-                        shutil.copy2(rp, bp)
-                        os.remove(rp)
-                        results.append({
-                            'filepath': fp, 'resolved_path': rp,
-                            'success': True, 'new_content': None,
-                            'messages': [f"[DELETED] {fp}", f"[BACKUP] {os.path.basename(bp)}"],
-                            'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
+                        if os.path.isdir(rp):
+                            bp = rp + '_deleted_bak'
+                            if os.path.exists(bp):
+                                shutil.rmtree(bp)
+                            shutil.copytree(rp, bp)
+                            shutil.rmtree(rp)
+                            results.append({
+                                'filepath': fp, 'resolved_path': rp,
+                                'success': True, 'new_content': None,
+                                'messages': [f"[DELETED FOLDER] {fp}", f"[BACKUP] {os.path.basename(bp)}"],
+                                'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
+                        else:
+                            bp = rp + '.deleted_bak'
+                            shutil.copy2(rp, bp)
+                            os.remove(rp)
+                            results.append({
+                                'filepath': fp, 'resolved_path': rp,
+                                'success': True, 'new_content': None,
+                                'messages': [f"[DELETED] {fp}", f"[BACKUP] {os.path.basename(bp)}"],
+                                'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
+
                     except Exception as e:
                         results.append({
                             'filepath': fp, 'resolved_path': rp,
@@ -449,7 +461,7 @@ class LineDiffEngine:
                 else:
                     failed += 1
                 continue
-            if any('[DELETED]' in m for m in r['messages']):
+            if any("[DELETED" in m for m in r["messages"]):
                 if r['success']:
                     deleted += 1
                 else:

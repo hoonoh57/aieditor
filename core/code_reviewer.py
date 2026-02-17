@@ -79,14 +79,22 @@ class CodeReviewer:
     def review_file(self, filepath, content=None):
         """Review a single file. Returns list of issues."""
         if content is None:
+            if not os.path.isfile(filepath):
+                return []  # Skip non-existent files silently
             try:
                 with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
-            except Exception as e:
-                return [self._issue(filepath, 0, self.ERROR, 'E001',
-                                    f'Cannot read file: {e}')]
+            except Exception:
+                return []  # Skip unreadable files
 
         ext = os.path.splitext(filepath)[1].lower()
+
+        # Only review code files
+        reviewable = {'.py', '.js', '.ts', '.jsx', '.tsx', '.cs', '.vb',
+                      '.java', '.go', '.rs', '.rb', '.php', '.swift', '.kt'}
+        if ext not in reviewable:
+            return []
+
         issues = []
 
         # Universal checks (all file types)
