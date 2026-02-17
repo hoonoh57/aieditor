@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ProjectScan v5.1b — Line-number Diff + GitHub Auto-sync (push fix)
-All modifications via line numbers. Includes GitHub commit/push after diff apply.
+ProjectScan v5.0 — 줄번호 기반 Diff 엔진
+모든 수정을 줄번호로 처리. SEARCH/REPLACE 블록 매칭 폐기.
 """
 
 import os
@@ -863,164 +863,37 @@ class GitHubUploader:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(full, dst)
             prog()
+            vis = '--public' if not private else '--private'
+            self.log(f"visibility: {'private' if private else 'public'}")
+            ok, out, err = self.run_cmd(f'{self.GH_PATH} repo create {repo_name} {vis} --source=. --push', cwd=td)
             with open(os.path.join(td, 'README.md'), 'w', encoding='utf-8') as f:
                 f.write(f"# {repo_name}\n\n{desc}\n\nFiles: {len(files)}\n\nUploaded by ProjectScan\n")
-            gi_path = os.path.join(td, '.gitignore')
-            if not os.path.exists(gi_path):
-                with open(gi_path, 'w', encoding='utf-8') as f:
-                    f.write("*.bak\n*.bak*\n__pycache__/\n.vs/\n")
             prog()
             self.run_cmd('git init', cwd=td)
             self.run_cmd('git add -A', cwd=td)
             self.run_cmd('git commit -m "Initial commit by ProjectScan"', cwd=td)
             prog()
             vis = '--private' if private else '--public'
-            self.log(f"visibility flag: {vis}")
-            ok, out, err = self.run_cmd(
-                f'{self.GH_PATH} repo create {repo_name} {vis} --source=. --push',
-                cwd=td)
+            ok, out, err = self.run_cmd(f'{self.GH_PATH} repo create {repo_name} {vis} --source=. --push', cwd=td)
             prog()
             if ok:
-                ok2, url, _ = self.run_cmd(
-                    f'{self.GH_PATH} repo view {repo_name} --json url -q .url',
-                    cwd=td)
+                ok2, url, _ = self.run_cmd(f'{self.GH_PATH} repo view {repo_name} --json url -q .url', cwd=td)
                 return True, url if ok2 else f"https://github.com/{repo_name}"
             return False, err
         except Exception as e:
             return False, str(e)
         finally:
-            try:
-                shutil.rmtree(td, ignore_errors=True)
-            except Exception:
-                pass
-
-    def init_local_repo(self, project_path, repo_name):
-        """Initialize local git repo and set remote if needed."""
-        git_dir = os.path.join(project_path, '.git')
-        if not os.path.isdir(git_dir):
-            self.run_cmd('git init', cwd=project_path)
-            gi_path = os.path.join(project_path, '.gitignore')
-            if not os.path.exists(gi_path):
-                with open(gi_path, 'w', encoding='utf-8') as f:
-                    f.write("*.bak\n*.bak*\n__pycache__/\n.vs/\n")
-            self.run_cmd('git add -A', cwd=project_path)
-            self.run_cmd('git commit -m "init by ProjectScan"', cwd=project_path)
-        ok, out, _ = self.run_cmd('git remote get-url origin', cwd=project_path)
-        if not ok:
-            ok_u, user, _ = self.run_cmd(
-                f'{self.GH_PATH} api user -q .login')
-            if ok_u and user:
-                remote_url = f"https://github.com/{user}/{repo_name}.git"
-            else:
-                remote_url = f"https://github.com/{repo_name}.git"
-            self.run_cmd(f'git remote add origin {remote_url}', cwd=project_path)
-            self.log(f"remote set: {remote_url}")
-        else:
-            self.log(f"remote exists: {out}")
-
-    def sync_push(self, project_path, message, progress_cb=None):
-        """Stage all, commit with message, pull then push to origin."""
-        # 1. Detect local branch name
-        ok_br, br_out, _ = self.run_cmd(
-            'git branch --show-current', cwd=project_path)
-        branch = br_out.strip() if ok_br and br_out and br_out.strip() else 'master'
-        self.log(f"sync_push: local branch = {branch}")
-
-        if progress_cb:
-            progress_cb(10)
-
-        # 2. Stage all changes
-        self.run_cmd('git add -A', cwd=project_path)
-        ok_diff, out_diff, _ = self.run_cmd(
-            'git diff --cached --stat', cwd=project_path)
-        has_staged = bool(out_diff and out_diff.strip())
-
-        # 3. Commit if staged changes exist
-        if has_staged:
-            if progress_cb:
-                progress_cb(20)
-            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-            full_msg = f"{message} [{ts}]"
-            safe_msg = full_msg.replace('"', '\\"')
-            ok_c, _, err_c = self.run_cmd(
-                f'git commit -m "{safe_msg}"', cwd=project_path)
-            if not ok_c:
-                self.log(f"commit failed: {err_c}")
-                return False, "commit failed"
-        else:
-            full_msg = message
-            self.log("no new staged changes")
-
-        if progress_cb:
-            progress_cb(30)
-
-        # 4. Check if any local commits exist at all
-        ok_any, any_out, _ = self.run_cmd(
-            'git log --oneline -1', cwd=project_path)
-        if not (ok_any and any_out and any_out.strip()):
-            self.log("no commits exist, nothing to push")
-            if progress_cb:
-                progress_cb(100)
-            return True, "(no commits)"
-
-        # 5. Check for unpushed commits
-        has_unpushed = False
-        ok_log, log_out, _ = self.run_cmd(
-            'git log --oneline @{u}..HEAD', cwd=project_path)
-        if ok_log and log_out and log_out.strip():
-            has_unpushed = True
-        else:
-            # No upstream yet — any local commit counts as unpushed
-            has_unpushed = True
-
-        if not has_staged and not has_unpushed:
-            self.log("nothing to commit or push")
-            if progress_cb:
-                progress_cb(100)
-            return True, "(no changes)"
-
-        if progress_cb:
-            progress_cb(40)
-
-        # 6. Pull before push (prevents rejection due to remote ahead)
-        self.log(f"pulling origin/{branch} before push...")
-        self.run_cmd(
-            f'git pull origin {branch} --allow-unrelated-histories --no-edit',
-            cwd=project_path)
-
-        if progress_cb:
-            progress_cb(70)
-
-        # 7. Push
-        ok_p, out_p, err_p = self.run_cmd(
-            f'git push -u origin {branch}', cwd=project_path)
-        if ok_p:
-            self.log(f"pushed to {branch}: {full_msg}")
-            if progress_cb:
-                progress_cb(100)
-            return True, full_msg
-
-        # 8. If normal push failed, try force push as last resort
-        self.log(f"push rejected, trying force push...")
-        ok_f, _, err_f = self.run_cmd(
-            f'git push -u origin {branch} --force', cwd=project_path)
-        if progress_cb:
-            progress_cb(100)
-        if ok_f:
-            self.log(f"force pushed to {branch}: {full_msg}")
-            return True, full_msg
-
-        self.log(f"push failed: {err_p}")
-        return False, err_p
+            try: shutil.rmtree(td, ignore_errors=True)
+            except: pass
 
 
 # ════════════════════════════════════════════════════════════
-#  8. ProjectScan v5.1b — Main Application
+#  8. ProjectScan v5.0 — Main Application
 # ════════════════════════════════════════════════════════════
 class ProjectScan:
     def __init__(self, root):
         self.root = root
-        self.root.title("ProjectScan v5.1b")
+        self.root.title("ProjectScan v5.0")
         self.root.geometry("1350x950")
         self.root.configure(bg='#1e1e2e')
 
@@ -1029,9 +902,7 @@ class ProjectScan:
         self.max_file_size = tk.IntVar(value=500)
         self.source_only = tk.BooleanVar(value=False)
         self.attach_file = tk.BooleanVar(value=False)
-        self.repo_private = tk.BooleanVar(value=False)
-        self.auto_sync = tk.BooleanVar(value=False)
-        self.commit_msg_var = tk.StringVar(value="update by ProjectScan")
+        self.repo_private = tk.BooleanVar(value=True)
         self.all_files = []
         self._current_file_path = None
 
@@ -1058,7 +929,6 @@ class ProjectScan:
 
         self.diff_engine = LineDiffEngine()
         self.uploader = GitHubUploader()
-        self._last_saved_files = []
         self._setup_styles()
         self._build_ui()
 
@@ -1150,15 +1020,9 @@ class ProjectScan:
         self.repo_name_var = tk.StringVar()
         ttk.Entry(gh_top, textvariable=self.repo_name_var, width=25).pack(side='left', padx=3)
         ttk.Checkbutton(gh_top, text="Private", variable=self.repo_private, style='Dark.TCheckbutton').pack(side='left', padx=3)
-        ttk.Button(gh_top, text="[New Repo]", style='Accent.TButton', command=self._upload_github).pack(side='left', padx=3)
+        ttk.Button(gh_top, text="[Upload GitHub]", style='Accent.TButton', command=self._upload_github).pack(side='left', padx=3)
         self.progress_var = tk.DoubleVar(value=0)
         ttk.Progressbar(gh_top, variable=self.progress_var, maximum=100, length=150).pack(side='left', padx=5)
-        gh_sync = ttk.Frame(tab_gh, style='Dark.TFrame')
-        gh_sync.pack(fill='x', padx=3, pady=2)
-        ttk.Label(gh_sync, text="Commit msg:", style='Dark.TLabel').pack(side='left')
-        ttk.Entry(gh_sync, textvariable=self.commit_msg_var, width=40).pack(side='left', padx=3)
-        ttk.Button(gh_sync, text="[Sync to GitHub]", style='Accent.TButton', command=self._sync_github).pack(side='left', padx=3)
-        ttk.Checkbutton(gh_sync, text="Auto-sync after diff apply", variable=self.auto_sync, style='Dark.TCheckbutton').pack(side='left', padx=5)
         self.github_log = scrolledtext.ScrolledText(tab_gh, bg='#181825', fg='#a6e3a1', font=('Consolas', 9), state='disabled')
         self.github_log.pack(fill='both', expand=True, padx=3, pady=3)
         self.notebook.add(tab_gh, text=' GitHub ')
@@ -1447,17 +1311,10 @@ class ProjectScan:
                         self.code_editor.set_content(c)
                     except: pass
                     break
-        self._last_saved_files = [r['filepath'] for r in results if r['success']]
+
         messagebox.showinfo("Done",
             f"Saved: {summary['saved']}\nFailed: {summary['failed']}\nSkipped: {summary['skipped']}")
         self.status_var.set(f"multi: saved {summary['saved']} failed {summary['failed']}")
-        if self.auto_sync.get() and summary['saved'] > 0:
-            file_list = ', '.join(self._last_saved_files[:5])
-            if len(self._last_saved_files) > 5:
-                file_list += f" +{len(self._last_saved_files)-5} more"
-            msg = f"diff applied: {file_list}"
-            self.commit_msg_var.set(msg)
-            self.root.after(500, self._do_sync)
 
     # -- Prompt --
 
@@ -1514,13 +1371,12 @@ class ProjectScan:
             parts.append("- @@ N INSERT : insert new content AFTER line N (use 0 to insert at top)")
             parts.append("- Each REPLACE/INSERT block must end with @@ END")
             parts.append("- Do NOT use SEARCH/REPLACE blocks. Use ONLY @@ line commands.")
-            parts.append("- After making changes, state the REASON for each modification so it can be used as a GitHub commit message.")
             parts.append("---")
 
             for i, (rel, full, sz) in enumerate(files, 1):
                 try:
                     content, *_ = EncodingHandler.read_file(full)
-                except Exception:
+                except:
                     content = "(read error)"
                 ext = os.path.splitext(rel)[1].lstrip('.')
                 parts.append(f"### File {i}: {rel}")
@@ -1600,62 +1456,6 @@ class ProjectScan:
         else:
             self.status_var.set("upload failed")
             messagebox.showerror("failed", "Upload failed:\n" + result)
-
-    def _sync_github(self):
-        rn = self.repo_name_var.get().strip()
-        if not rn:
-            messagebox.showwarning("warning", "enter repo name"); return
-        pp = self.project_path.get()
-        if not pp:
-            messagebox.showwarning("warning", "select project folder first"); return
-        msg = self.commit_msg_var.get().strip()
-        if not msg:
-            msg = "update by ProjectScan"
-        self._do_sync()
-
-    def _do_sync(self):
-        rn = self.repo_name_var.get().strip()
-        pp = self.project_path.get()
-        if not rn or not pp:
-            self.status_var.set("sync: need repo name and project path")
-            return
-        msg = self.commit_msg_var.get().strip() or "update by ProjectScan"
-        self.notebook.select(3)
-
-        def log_cb(text):
-            self.github_log.config(state='normal')
-            self.github_log.insert(tk.END, text + '\n')
-            self.github_log.see(tk.END)
-            self.github_log.config(state='disabled')
-
-        self.uploader.log = log_cb
-        self.github_log.config(state='normal')
-        self.github_log.insert(tk.END, f"\n{'='*40}\nSync: {msg}\n{'='*40}\n")
-        self.github_log.config(state='disabled')
-
-        def do_work():
-            self.uploader.init_local_repo(pp, rn)
-            ok, result = self.uploader.sync_push(
-                pp, msg,
-                progress_cb=lambda v: self.progress_var.set(v))
-            self.root.after(0, lambda: self._sync_done(ok, result))
-
-        self.status_var.set("syncing to GitHub...")
-        threading.Thread(target=do_work, daemon=True).start()
-
-    def _sync_done(self, ok, result):
-        self.progress_var.set(100 if ok else 0)
-        if ok:
-            self.status_var.set(f"sync done: {result}")
-            self.github_log.config(state='normal')
-            self.github_log.insert(tk.END, f"\n[OK] {result}\n")
-            self.github_log.config(state='disabled')
-        else:
-            self.status_var.set("sync failed")
-            self.github_log.config(state='normal')
-            self.github_log.insert(tk.END, f"\n[FAIL] {result}\n")
-            self.github_log.config(state='disabled')
-            messagebox.showerror("Sync Failed", result)
 
 
 # ════════════════════════════════════════════════════════════
