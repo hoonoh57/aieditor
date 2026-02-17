@@ -1,386 +1,761 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ProjectScan v6.0 — Modular version with core package
+Line-number Diff + GitHub Auto-sync
+"""
+
 import os
-import fnmatch
+import re
+import sys
+import io
+import json
+import shutil
+import hashlib
+import threading
+from datetime import datetime
+from pathlib import Path
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
+
+# Fix console encoding
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Import from core package
+from core import (
+    EncodingHandler, TextNormalizer,
+    LineDiffParser, LineDiffEngine,
+    GitHubUploader,
+    CheckboxTreeview,
+    CodeEditor,
+)
 
 
+# ════════════════════════════════════════════════════════════
+#  ProjectScan v6.0 — Main Application
+# ════════════════════════════════════════════════════════════
 class ProjectScan:
     def __init__(self, root):
         self.root = root
-        self.root.title("📂 ProjectScan — 프로젝트 스캔 도구")
-        self.root.geometry("900x700")
-        self.root.configure(bg="#1e1e2e")
+        self.root.title("ProjectScan v6.0")
+        self.root.geometry("1350x950")
+        self.root.configure(bg='#1e1e2e')
 
-        self.project_path = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="프로젝트 폴더를 선택하세요")
-        self.include_content = tk.BooleanVar(value=True)
-        self.max_file_size = tk.IntVar(value=50)
-        self.token_count = tk.IntVar(value=0)
+        self.project_path = tk.StringVar()
+        self.status_var = tk.StringVar(value="ready")
+        self.max_file_size = tk.IntVar(value=500)
+        self.source_only = tk.BooleanVar(value=False)
+        self.attach_file = tk.BooleanVar(value=False)
+        self.repo_private = tk.BooleanVar(value=False)
+        self.auto_sync = tk.BooleanVar(value=False)
+        self.commit_msg_var = tk.StringVar(value="update by ProjectScan")
+        self.all_files = []
+        self._current_file_path = None
 
-        self.default_excludes = [
-            'node_modules', '.git', '__pycache__', '.next', 'dist',
-            'build', '.venv', 'venv', 'env', '.env', '.idea', '.vscode',
-            '*.pyc', '*.pyo', '*.exe', '*.dll', '*.so', '*.dylib',
-            '*.jpg', '*.jpeg', '*.png', '*.gif', '*.ico', '*.svg',
-            '*.mp3', '*.mp4', '*.avi', '*.mov', '*.pdf',
-            '*.zip', '*.tar', '*.gz', '*.rar',
-            '*.lock', 'package-lock.json', 'yarn.lock',
-            '*.min.js', '*.min.css', '*.map',
-            '.DS_Store', 'Thumbs.db','*.bak',
-            '.patch_backup', '*.bak', '*.bmp', '*.log', '*.dylib', '*.bmp', '*.pdb',
-            '*.bmp','*.exp', '*.lib', '*.resx','*.resources','*.props', '*.targets','*.cache',
-			'*.tlog', '*.recipe', '*.ilk', '*.obj', '*.idb' ,'*.json'
-        ]
+        self.source_only_ext = {
+            '.c','.cpp','.cc','.cxx','.h','.hpp','.hxx','.cs','.vb','.fs',
+            '.py','.java','.js','.ts','.jsx','.tsx','.go','.rs','.rb','.php',
+            '.swift','.kt','.kts','.m','.mm','.lua','.r','.pl','.pm',
+            '.sh','.bash','.bat','.ps1','.sql'}
+        self.all_code_ext = self.source_only_ext | {
+            '.xaml','.xml','.json','.yaml','.yml','.toml','.html','.htm',
+            '.css','.scss','.less','.svg','.config','.ini','.cfg',
+            '.properties','.env','.md','.txt','.rst','.csv','.sln',
+            '.csproj','.vbproj','.fsproj','.vcxproj','.props','.targets',
+            '.resx','.settings','.Designer.vb','.Designer.cs',
+            '.razor','.cshtml','.vbhtml'}
+        self.exclude_patterns = [
+            'bin','obj','.vs','Debug','Release','x64','x86','node_modules',
+            '__pycache__','.git','.svn','packages','.idea','*.dll','*.exe',
+            '*.pdb','*.cache','*.suo','*.user','*.bak','*.log',
+            'Thumbs.db','.DS_Store','*.o','*.obj']
+        self.sensitive_patterns = [
+            '*.env','.env','*.pem','*.key','*.pfx','id_rsa','*password*',
+            '*secret*','appsettings.Development.json','secrets.json','web.config']
 
-        self.code_extensions = [
-            '.py', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.scss',
-            '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs',
-            '.rb', '.php', '.swift', '.kt', '.scala', '.r', '.R',
-            '.sql', '.sh', '.bash', '.bat', '.cmd', '.ps1',
-            '.json', '.jsonc', '.yaml', '.yml', '.toml', '.ini', '.cfg',
-            '.xml', '.md', '.txt', '.env.example', '.gitignore',
-            '.dockerfile', 'Dockerfile', '.dockerignore',
-            'Makefile', 'CMakeLists.txt', '.vue', '.svelte', '*.vb'
-        ]
+        self.diff_engine = LineDiffEngine()
+        self.uploader = GitHubUploader()
+        self._last_saved_files = []
+        self._setup_styles()
+        self._build_ui()
 
-        self.setup_styles()
-        self.create_widgets()
-
-    def setup_styles(self):
+    def _setup_styles(self):
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure('Title.TLabel', font=('맑은 고딕', 16, 'bold'),
-                        foreground='#cdd6f4', background='#1e1e2e')
-        style.configure('Info.TLabel', font=('맑은 고딕', 10),
-                        foreground='#a6adc8', background='#1e1e2e')
-        style.configure('Status.TLabel', font=('맑은 고딕', 10),
-                        foreground='#a6e3a1', background='#1e1e2e')
-        style.configure('TCheckbutton', font=('맑은 고딕', 10),
-                        foreground='#cdd6f4', background='#1e1e2e')
+        style.configure('Dark.TFrame', background='#1e1e2e')
+        style.configure('Dark.TLabel', background='#1e1e2e', foreground='#cdd6f4', font=('Consolas', 9))
+        style.configure('Dark.TButton', background='#45475a', foreground='#cdd6f4', font=('Consolas', 9))
+        style.configure('Dark.TCheckbutton', background='#1e1e2e', foreground='#cdd6f4', font=('Consolas', 9))
+        style.configure('Accent.TButton', background='#89b4fa', foreground='#1e1e2e', font=('Consolas', 9, 'bold'))
+        style.configure('Treeview', background='#181825', foreground='#cdd6f4', fieldbackground='#181825', font=('Consolas', 9))
+        style.configure('Treeview.Heading', background='#313244', foreground='#cdd6f4', font=('Consolas', 9, 'bold'))
 
-    def create_widgets(self):
-        # 제목
-        title_frame = tk.Frame(self.root, bg='#1e1e2e')
-        title_frame.pack(fill='x', padx=20, pady=(15, 5))
-        ttk.Label(title_frame, text="📂 ProjectScan", style='Title.TLabel').pack(side='left')
-        ttk.Label(title_frame, text="프로젝트를 스캔해서 AI에게 보내기",
-                  style='Info.TLabel').pack(side='left', padx=(15, 0))
+    def _build_ui(self):
+        top = ttk.Frame(self.root, style='Dark.TFrame')
+        top.pack(fill='x', padx=5, pady=3)
+        ttk.Button(top, text="[Folder]", style='Dark.TButton', command=self._select_folder).pack(side='left', padx=2)
+        ttk.Label(top, textvariable=self.project_path, style='Dark.TLabel').pack(side='left', padx=5, fill='x', expand=True)
+        ttk.Label(top, text="MaxKB:", style='Dark.TLabel').pack(side='left')
+        ttk.Spinbox(top, from_=10, to=5000, textvariable=self.max_file_size, width=6).pack(side='left', padx=2)
+        ttk.Checkbutton(top, text="SrcOnly", variable=self.source_only, style='Dark.TCheckbutton').pack(side='left', padx=5)
 
-        # 프로젝트 폴더 선택
-        folder_frame = tk.Frame(self.root, bg='#1e1e2e')
-        folder_frame.pack(fill='x', padx=20, pady=5)
+        scan_bar = ttk.Frame(self.root, style='Dark.TFrame')
+        scan_bar.pack(fill='x', padx=5, pady=2)
+        ttk.Button(scan_bar, text="[Scan Folder]", style='Accent.TButton', command=self._scan_folder).pack(side='left', padx=2)
+        ttk.Button(scan_bar, text="[Scan VS Project]", style='Accent.TButton', command=self._scan_vs).pack(side='left', padx=2)
+        ttk.Button(scan_bar, text="[Check All]", style='Dark.TButton', command=lambda: self.tree.check_all()).pack(side='left', padx=2)
+        ttk.Button(scan_bar, text="[Uncheck All]", style='Dark.TButton', command=lambda: self.tree.uncheck_all()).pack(side='left', padx=2)
 
-        tk.Button(folder_frame, text="📁 프로젝트 폴더 선택",
-                  font=('맑은 고딕', 10), bg='#45475a', fg='#cdd6f4',
-                  relief='flat', padx=10, pady=5,
-                  command=self.select_folder).pack(side='left')
+        main = ttk.PanedWindow(self.root, orient='horizontal')
+        main.pack(fill='both', expand=True, padx=5, pady=3)
 
-        self.folder_label = ttk.Label(folder_frame, text="선택되지 않음", style='Info.TLabel')
-        self.folder_label.pack(side='left', padx=(10, 0))
+        left = ttk.Frame(main, style='Dark.TFrame')
+        self.tree = CheckboxTreeview(left, columns=('size',), show='tree headings')
+        self.tree.heading('#0', text='File')
+        self.tree.heading('size', text='Size')
+        self.tree.column('size', width=70, anchor='e')
+        self.tree.pack(fill='both', expand=True)
+        self.tree.bind('<Double-1>', self._on_tree_dblclick)
+        main.add(left, weight=1)
 
-        ttk.Checkbutton(folder_frame, text="파일 내용 포함",
-                        variable=self.include_content,
-                        style='TCheckbutton').pack(side='right')
+        right = ttk.Frame(main, style='Dark.TFrame')
+        self.notebook = ttk.Notebook(right)
+        self.notebook.pack(fill='both', expand=True)
 
-        # 옵션
-        opt_frame = tk.Frame(self.root, bg='#1e1e2e')
-        opt_frame.pack(fill='x', padx=20, pady=5)
+        # Tab 1: Editor
+        tab_edit = ttk.Frame(self.notebook, style='Dark.TFrame')
+        self.code_editor = CodeEditor(tab_edit, bg='#1e1e2e')
+        self.code_editor.pack(fill='both', expand=True)
+        edit_btn = ttk.Frame(tab_edit, style='Dark.TFrame')
+        edit_btn.pack(fill='x')
+        ttk.Button(edit_btn, text="[Save]", style='Accent.TButton', command=self._save_file).pack(side='left', padx=2, pady=2)
+        self.notebook.add(tab_edit, text=' Editor ')
 
-        ttk.Label(opt_frame, text="최대 파일 크기(KB):", style='Info.TLabel').pack(side='left')
-        size_spin = tk.Spinbox(opt_frame, from_=10, to=500, width=5,
-                               textvariable=self.max_file_size,
-                               font=('Consolas', 10), bg='#313244', fg='#cdd6f4')
-        size_spin.pack(side='left', padx=5)
+        # Tab 2: Diff
+        tab_diff = ttk.Frame(self.notebook, style='Dark.TFrame')
+        ttk.Label(tab_diff, text="Paste AI diff below:", style='Dark.TLabel').pack(anchor='w', padx=3, pady=2)
+        self.diff_text = scrolledtext.ScrolledText(tab_diff, bg='#181825', fg='#a6e3a1', font=('Consolas', 9), height=15, insertbackground='#f5e0dc')
+        self.diff_text.pack(fill='both', expand=True, padx=3, pady=2)
+        self.diff_log_label = ttk.Label(tab_diff, text="", style='Dark.TLabel', wraplength=500, justify='left')
+        self.diff_log_label.pack(fill='x', padx=3, pady=2)
+        diff_btns = ttk.Frame(tab_diff, style='Dark.TFrame')
+        diff_btns.pack(fill='x', padx=3, pady=2)
+        ttk.Button(diff_btns, text="[Analyze]", style='Dark.TButton', command=self._analyze_diff).pack(side='left', padx=2)
+        ttk.Button(diff_btns, text="[Apply to Current]", style='Accent.TButton', command=self._apply_diff_current).pack(side='left', padx=2)
+        ttk.Button(diff_btns, text="[Multi-file Apply+Save]", style='Accent.TButton', command=self._apply_multi_diff).pack(side='left', padx=2)
+        self.notebook.add(tab_diff, text=' Diff ')
 
-        # 스캔 모드 버튼
-        mode_frame = tk.Frame(self.root, bg='#1e1e2e')
-        mode_frame.pack(fill='x', padx=20, pady=10)
+        # Tab 3: Prompt
+        tab_prompt = ttk.Frame(self.notebook, style='Dark.TFrame')
+        ttk.Label(tab_prompt, text="Prompt:", style='Dark.TLabel').pack(anchor='w', padx=3, pady=2)
+        self.prompt_text = scrolledtext.ScrolledText(tab_prompt, bg='#181825', fg='#cdd6f4', font=('Consolas', 9), height=5, insertbackground='#f5e0dc')
+        self.prompt_text.pack(fill='x', padx=3, pady=2)
+        p_chk = ttk.Frame(tab_prompt, style='Dark.TFrame')
+        p_chk.pack(fill='x', padx=3)
+        ttk.Checkbutton(p_chk, text="Attach checked files", variable=self.attach_file, style='Dark.TCheckbutton').pack(side='left')
+        ttk.Button(p_chk, text="[Copy to Clipboard]", style='Accent.TButton', command=self._merge_and_copy).pack(side='right', padx=2)
+        ttk.Label(tab_prompt, text="Preview:", style='Dark.TLabel').pack(anchor='w', padx=3, pady=2)
+        self.preview_text = scrolledtext.ScrolledText(tab_prompt, bg='#181825', fg='#6c7086', font=('Consolas', 9), state='disabled', insertbackground='#f5e0dc')
+        self.preview_text.pack(fill='both', expand=True, padx=3, pady=2)
+        self.notebook.add(tab_prompt, text=' Prompt ')
 
-        tk.Button(mode_frame, text="🔍 구조만 스캔\n(폴더/파일 목록)",
-                  font=('맑은 고딕', 11, 'bold'), bg='#89b4fa', fg='#1e1e2e',
-                  relief='flat', padx=20, pady=10, cursor='hand2',
-                  command=lambda: self.scan('structure')).pack(side='left', expand=True, fill='x', padx=(0, 5))
+        # Tab 4: GitHub
+        tab_gh = ttk.Frame(self.notebook, style='Dark.TFrame')
+        gh_top = ttk.Frame(tab_gh, style='Dark.TFrame')
+        gh_top.pack(fill='x', padx=3, pady=3)
+        ttk.Label(gh_top, text="Repo:", style='Dark.TLabel').pack(side='left')
+        self.repo_name_var = tk.StringVar()
+        ttk.Entry(gh_top, textvariable=self.repo_name_var, width=25).pack(side='left', padx=3)
+        ttk.Checkbutton(gh_top, text="Private", variable=self.repo_private, style='Dark.TCheckbutton').pack(side='left', padx=3)
+        ttk.Button(gh_top, text="[New Repo]", style='Accent.TButton', command=self._upload_github).pack(side='left', padx=3)
+        self.progress_var = tk.DoubleVar(value=0)
+        ttk.Progressbar(gh_top, variable=self.progress_var, maximum=100, length=150).pack(side='left', padx=5)
+        gh_sync = ttk.Frame(tab_gh, style='Dark.TFrame')
+        gh_sync.pack(fill='x', padx=3, pady=2)
+        ttk.Label(gh_sync, text="Commit msg:", style='Dark.TLabel').pack(side='left')
+        ttk.Entry(gh_sync, textvariable=self.commit_msg_var, width=40).pack(side='left', padx=3)
+        ttk.Button(gh_sync, text="[Sync to GitHub]", style='Accent.TButton', command=self._sync_github).pack(side='left', padx=3)
+        ttk.Button(gh_sync, text="[Rollback]", command=self._rollback_last).pack(side='left', padx=3)
+        ttk.Checkbutton(gh_sync, text="Auto-sync after diff apply", variable=self.auto_sync, style='Dark.TCheckbutton').pack(side='left', padx=5)
+        self.github_log = scrolledtext.ScrolledText(tab_gh, bg='#181825', fg='#a6e3a1', font=('Consolas', 9), state='disabled')
+        self.github_log.pack(fill='both', expand=True, padx=3, pady=3)
+        self.notebook.add(tab_gh, text=' GitHub ')
 
-        tk.Button(mode_frame, text="📄 전체 스캔\n(구조 + 파일 내용)",
-                  font=('맑은 고딕', 11, 'bold'), bg='#a6e3a1', fg='#1e1e2e',
-                  relief='flat', padx=20, pady=10, cursor='hand2',
-                  command=lambda: self.scan('full')).pack(side='left', expand=True, fill='x', padx=5)
+        main.add(right, weight=2)
+        ttk.Label(self.root, textvariable=self.status_var, style='Dark.TLabel').pack(fill='x', padx=5, pady=2)
 
-        tk.Button(mode_frame, text="🎯 선택 스캔\n(특정 파일만)",
-                  font=('맑은 고딕', 11, 'bold'), bg='#f9e2af', fg='#1e1e2e',
-                  relief='flat', padx=20, pady=10, cursor='hand2',
-                  command=lambda: self.scan('select')).pack(side='left', expand=True, fill='x', padx=(5, 0))
+    # -- Folder/Scan --
 
-        # 결과 영역
-        result_frame = tk.Frame(self.root, bg='#1e1e2e')
-        result_frame.pack(fill='both', expand=True, padx=20, pady=5)
+    def _select_folder(self):
+        p = filedialog.askdirectory()
+        if p:
+            self.project_path.set(p)
+            self.status_var.set("folder: " + p)
 
-        result_header = tk.Frame(result_frame, bg='#1e1e2e')
-        result_header.pack(fill='x')
-        ttk.Label(result_header, text="📋 스캔 결과", style='Info.TLabel').pack(side='left')
-        self.token_label = ttk.Label(result_header, text="", style='Info.TLabel')
-        self.token_label.pack(side='right')
-
-        self.result_text = scrolledtext.ScrolledText(
-            result_frame, wrap=tk.WORD, font=('Consolas', 10),
-            bg='#313244', fg='#cdd6f4', insertbackground='#f5e0dc',
-            relief='flat', padx=10, pady=10
-        )
-        self.result_text.pack(fill='both', expand=True, pady=(5, 0))
-
-        # 복사 버튼
-        copy_frame = tk.Frame(self.root, bg='#1e1e2e')
-        copy_frame.pack(fill='x', padx=20, pady=10)
-
-        tk.Button(copy_frame, text="📋 클립보드에 복사 → AI 채팅에 붙여넣기",
-                  font=('맑은 고딕', 13, 'bold'), bg='#cba6f7', fg='#1e1e2e',
-                  relief='flat', padx=30, pady=10, cursor='hand2',
-                  command=self.copy_to_clipboard).pack(fill='x')
-
-        # 상태바
-        status_frame = tk.Frame(self.root, bg='#11111b')
-        status_frame.pack(fill='x', side='bottom')
-        ttk.Label(status_frame, textvariable=self.status_var,
-                  style='Status.TLabel').pack(padx=10, pady=5)
-
-    def select_folder(self):
-        folder = filedialog.askdirectory(title="프로젝트 폴더 선택")
-        if folder:
-            self.project_path.set(folder)
-            self.folder_label.config(text=folder)
-            self.status_var.set(f"프로젝트: {folder}")
-
-    def should_exclude(self, path, name):
-        for pattern in self.default_excludes:
-            if fnmatch.fnmatch(name, pattern):
+    def _should_exclude(self, name):
+        for pat in self.exclude_patterns:
+            if pat.startswith('*') and name.lower().endswith(pat[1:].lower()):
                 return True
-            if name == pattern:
+            if name.lower() == pat.lower():
                 return True
         return False
 
-    def is_code_file(self, filename):
-        if filename in ['Dockerfile', 'Makefile', 'CMakeLists.txt', '.gitignore', '.env.example']:
-            return True
-        _, ext = os.path.splitext(filename)
-        return ext.lower() in self.code_extensions
+    def _is_target(self, path):
+        ext = os.path.splitext(path)[1].lower()
+        exts = self.source_only_ext if self.source_only.get() else self.all_code_ext
+        return ext in exts
 
-    def get_file_tree(self, path, prefix="", max_depth=5, current_depth=0):
-        if current_depth >= max_depth:
-            return prefix + "... (깊이 제한)\n"
+    def _format_size(self, size):
+        if size < 1024: return f"{size} B"
+        if size < 1024 * 1024: return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
 
-        result = ""
-        try:
-            entries = sorted(os.listdir(path))
-        except PermissionError:
-            return prefix + "... (접근 불가)\n"
+    def _scan_folder(self):
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select folder first"); return
+        self.all_files = []
+        max_kb = self.max_file_size.get() * 1024
+        for dirpath, dirnames, filenames in os.walk(pp):
+            dirnames[:] = [d for d in dirnames if not self._should_exclude(d)]
+            for fn in filenames:
+                if self._should_exclude(fn): continue
+                fp = os.path.join(dirpath, fn)
+                if not self._is_target(fp): continue
+                try: sz = os.path.getsize(fp)
+                except OSError: continue
+                if sz > max_kb: continue
+                self.all_files.append((os.path.relpath(fp, pp), fp, sz))
+        self._populate_tree()
+        self.status_var.set(f"scan done: {len(self.all_files)} files")
 
-        dirs = []
-        files = []
-        for entry in entries:
-            if self.should_exclude(path, entry):
-                continue
-            full = os.path.join(path, entry)
-            if os.path.isdir(full):
-                dirs.append(entry)
-            elif os.path.isfile(full):
-                files.append(entry)
+    def _scan_vs(self):
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select folder first"); return
+        projs = []
+        for fn in os.listdir(pp):
+            fp = os.path.join(pp, fn)
+            if fn.endswith(('.csproj', '.vbproj', '.fsproj', '.vcxproj')):
+                projs.append(fp)
+        for dirpath, dirnames, filenames in os.walk(pp):
+            dirnames[:] = [d for d in dirnames if not self._should_exclude(d)]
+            for fn in filenames:
+                fp = os.path.join(dirpath, fn)
+                if fn.endswith(('.csproj', '.vbproj', '.fsproj', '.vcxproj')):
+                    if fp not in projs: projs.append(fp)
+        if not projs:
+            messagebox.showinfo("VS project", "no VS project found")
+            self._scan_folder(); return
 
-        items = dirs + files
-        for i, entry in enumerate(items):
-            is_last = (i == len(items) - 1)
-            connector = "└── " if is_last else "├── "
-            full = os.path.join(path, entry)
-
-            if os.path.isdir(full):
-                result += f"{prefix}{connector}📁 {entry}/\n"
-                next_prefix = prefix + ("    " if is_last else "│   ")
-                result += self.get_file_tree(full, next_prefix, max_depth, current_depth + 1)
-            else:
-                size = os.path.getsize(full)
-                size_str = f"{size / 1024:.1f}KB" if size > 1024 else f"{size}B"
-                result += f"{prefix}{connector}{entry} ({size_str})\n"
-
-        return result
-
-    def get_code_files(self, path):
-        code_files = []
-        for root_dir, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not self.should_exclude(root_dir, d)]
-
-            for f in files:
-                if self.should_exclude(root_dir, f):
-                    continue
-                if not self.is_code_file(f):
-                    continue
-
-                full_path = os.path.join(root_dir, f)
-                rel_path = os.path.relpath(full_path, path)
-                size = os.path.getsize(full_path)
-
-                if size <= self.max_file_size.get() * 1024:
-                    code_files.append((rel_path, full_path, size))
-
-        return code_files
-
-    def read_file_safe(self, filepath):
-        encodings = ['utf-8', 'cp949', 'euc-kr', 'latin-1']
-        for enc in encodings:
+        self.all_files = []
+        max_kb = self.max_file_size.get() * 1024
+        collected = set()
+        for proj_file in projs:
+            proj_dir = os.path.dirname(proj_file)
             try:
-                with open(filepath, 'r', encoding=enc) as f:
-                    return f.read()
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-        return "[읽기 실패: 인코딩 문제]"
+                tree = ET.parse(proj_file)
+                xroot = tree.getroot()
+                ns = ''
+                if xroot.tag.startswith('{'):
+                    ns = xroot.tag.split('}')[0] + '}'
+                for tag in ['Compile','Content','None','TypeScriptCompile',
+                            'ClCompile','ClInclude','Page','Resource',
+                            'ApplicationDefinition','EmbeddedResource']:
+                    for elem in xroot.iter(f'{ns}{tag}'):
+                        inc = elem.get('Include')
+                        if inc:
+                            fp = os.path.normpath(os.path.join(proj_dir, inc))
+                            if os.path.isfile(fp) and fp not in collected and self._is_target(fp):
+                                try: sz = os.path.getsize(fp)
+                                except OSError: continue
+                                if sz <= max_kb:
+                                    self.all_files.append((os.path.relpath(fp, pp), fp, sz))
+                                    collected.add(fp)
+            except: continue
+        if not self.all_files:
+            self._scan_folder(); return
+        self._populate_tree()
+        self.status_var.set(f"VS scan: {len(self.all_files)} files")
 
-    def scan(self, mode):
-        project = self.project_path.get()
-        if not project:
-            messagebox.showwarning("경고", "프로젝트 폴더를 먼저 선택하세요!")
+    def _populate_tree(self):
+        for item in self.tree.get_children(''): self.tree.delete(item)
+        self.tree._checked.clear()
+        folders = {}
+        for rel, full, sz in sorted(self.all_files, key=lambda x: x[0]):
+            parts = rel.replace('\\', '/').split('/')
+            parent = ''
+            for i, part in enumerate(parts[:-1]):
+                key = '/'.join(parts[:i + 1])
+                if key not in folders:
+                    folders[key] = self.tree.insert_with_check(parent, 'end', text=part, checked=True, values=('',))
+                parent = folders[key]
+            fn = parts[-1]
+            is_sens = any((p.startswith('*') and fn.lower().endswith(p[1:].lower())) or fn.lower() == p.lower() for p in self.sensitive_patterns)
+            self.tree.insert_with_check(parent, 'end', text=('!! ' if is_sens else '') + fn, checked=not is_sens, values=(self._format_size(sz),))
+
+    def _on_tree_dblclick(self, event):
+        sel = self.tree.selection()
+        if not sel: return
+        txt = self.tree.item(sel[0], 'text')
+        name = txt.lstrip('[v] [_] !! ').strip()
+        for rel, full, sz in self.all_files:
+            if rel.replace('\\', '/').endswith(name) or os.path.basename(rel) == name:
+                self._current_file_path = full
+                self.code_editor.load_file(full)
+                self.notebook.select(0)
+                self.status_var.set("opened: " + rel)
+                return
+
+    def _save_file(self):
+        if self.code_editor.save_file():
+            name = os.path.basename(self.code_editor.file_path)
+            self.status_var.set("saved: " + name)
+
+    # -- Diff --
+
+    def _analyze_diff(self):
+        dt = self.diff_text.get("1.0", tk.END).strip()
+        if not dt:
+            self.diff_log_label.config(text="[!] diff text empty"); return
+        pm = {r: f for r, f, *_ in self.all_files}
+        a = self.diff_engine.analyze(dt, pm)
+        fmt_n = {'unrecognized': '[X] unrecognized', 'single_file': 'single file',
+                 'single_file_named': 'single file (named)', 'multi_file': 'multi file'}
+        lines = [f"Format: {fmt_n.get(a['format'], '?')}",
+                 f"Files: {a['file_count']} | Changes: {a['total_changes']}"]
+        for f in a['files']:
+            st = '[OK]' if f['found_in_project'] else '[X]'
+            detail = []
+            if f.get('rep_count'): detail.append(f"replace:{f['rep_count']}")
+            if f.get('del_count'): detail.append(f"delete:{f['del_count']}")
+            if f.get('ins_count'): detail.append(f"insert:{f['ins_count']}")
+            dtype = ' + '.join(detail) if detail else str(f['change_count'])
+            lines.append(f"  {st} {f['path']} -- {dtype}")
+        if a['format'] == 'single_file':
+            lines.append("\n-> use 'Apply to Current'")
+        elif a['format'] in ('single_file_named', 'multi_file'):
+            lines.append("\n-> use 'Multi-file Apply+Save'")
+        elif a['format'] == 'unrecognized':
+            lines.append("\n-> check format: @@ N-M REPLACE ... @@ END")
+        self.diff_log_label.config(text='\n'.join(lines))
+        self.status_var.set(f"analyzed: {a['file_count']} files, {a['total_changes']} changes")
+
+    def _apply_diff_current(self):
+        dt = self.diff_text.get("1.0", tk.END).strip()
+        if not dt:
+            messagebox.showwarning("warning", "diff is empty"); return
+        if not self._current_file_path:
+            messagebox.showwarning("warning", "open a file first"); return
+        parsed = self.diff_engine.parse(dt)
+        if not parsed:
+            messagebox.showerror("parse error",
+                "no @@ commands found.\n\n"
+                "Format:\n"
+                "@@ 15-23 REPLACE\n"
+                "new code...\n"
+                "@@ END\n"
+                "@@ 50 DELETE 3\n"
+                "@@ 60 INSERT\n"
+                "new code...\n"
+                "@@ END"); return
+        all_cmds = []
+        for cmds in parsed.values():
+            all_cmds.extend(cmds)
+        if not all_cmds:
+            messagebox.showwarning("warning", "no changes"); return
+        content = self.code_editor.get_content()
+        new_c, msgs = self.diff_engine.apply_to_content(content, all_cmds)
+        log = '\n'.join(msgs)
+        if any('[OK]' in m for m in msgs):
+            self.code_editor.set_content(new_c)
+            self.status_var.set("diff applied -- save needed")
+        else:
+            self.status_var.set("apply failed")
+        self.diff_log_label.config(text=log[:600])
+        messagebox.showinfo("Diff Result", log)
+
+    def _apply_multi_diff(self):
+        dt = self.diff_text.get("1.0", tk.END).strip()
+        if not dt:
+            messagebox.showwarning("warning", "diff is empty"); return
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first"); return
+        pm = {r: f for r, f, *_ in self.all_files}
+
+        parsed = self.diff_engine.parse(dt)
+
+        if not parsed:
+            # 디버그: 토큰 감지 정보
+            text = TextNormalizer.full(dt)
+            tlines = text.split('\n')
+            found_file = sum(1 for l in tlines if LineDiffParser.RE_FILE_START.match(l))
+            found_replace = sum(1 for l in tlines if LineDiffParser.RE_CMD_REPLACE.match(l.strip()))
+            found_delete = sum(1 for l in tlines if LineDiffParser.RE_CMD_DELETE.match(l.strip()))
+            found_insert = sum(1 for l in tlines if LineDiffParser.RE_CMD_INSERT.match(l.strip()))
+            found_end = sum(1 for l in tlines if LineDiffParser.RE_CMD_END.match(l.strip()))
+
+            messagebox.showerror("parse error",
+                f"No @@ commands found.\n\n"
+                f"Tokens detected:\n"
+                f"  === FILE: {found_file}\n"
+                f"  @@ N-M REPLACE: {found_replace}\n"
+                f"  @@ N DELETE: {found_delete}\n"
+                f"  @@ N INSERT: {found_insert}\n"
+                f"  @@ END: {found_end}\n"
+                f"\nExpected format:\n"
+                f"=== FILE: path/file.js ===\n"
+                f"@@ 15-23 REPLACE\n"
+                f"new code\n"
+                f"@@ END\n"
+                f"=== END FILE ===")
             return
 
-        self.result_text.delete('1.0', tk.END)
-        self.status_var.set("스캔 중...")
-        self.root.update()
+        a = self.diff_engine.analyze(dt, pm)
 
-        result = f"# 프로젝트 스캔 결과\n"
-        result += f"# 경로: {project}\n"
-        result += f"# 시간: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        if a['total_changes'] == 0:
+            messagebox.showwarning("warning", "no valid changes"); return
 
-        if mode == 'structure':
-            result += "## 프로젝트 구조\n```\n"
-            result += self.get_file_tree(project)
-            result += "```\n"
+        # Confirmation dialog
+        fl_lines = []
+        for f in a['files']:
+            st = '[OK]' if f['found_in_project'] else '[X]'
+            tags = []
+            if f.get('rep_count'): tags.append(f"R:{f['rep_count']}")
+            if f.get('del_count'): tags.append(f"D:{f['del_count']}")
+            if f.get('ins_count'): tags.append(f"I:{f['ins_count']}")
+            fl_lines.append(f"  {st} {f['path']} ({'+'.join(tags)})")
 
-            self.show_result_and_copy(result)
+        msg = f"{a['file_count']} files, {a['total_changes']} changes\n\n"
+        msg += '\n'.join(fl_lines) + '\n'
 
-        elif mode == 'full':
-            result += "## 프로젝트 구조\n```\n"
-            result += self.get_file_tree(project)
-            result += "```\n\n"
+        nf = sum(1 for f in a['files'] if not f['found_in_project'] and f['path'] != '__current_file__')
+        if nf:
+            msg += f"\n[!] {nf} files not found\n"
+        msg += "\nProceed? (.bak backup will be created)"
 
-            code_files = self.get_code_files(project)
-            result += f"## 파일 내용 ({len(code_files)}개 파일)\n\n"
+        if not messagebox.askyesno("Multi-file Apply", msg):
+            return
 
-            for rel_path, full_path, size in code_files:
-                content = self.read_file_safe(full_path)
-                ext = os.path.splitext(rel_path)[1].lstrip('.')
-                result += f"### 📄 {rel_path}\n"
-                result += f"```{ext}\n{content}\n```\n\n"
+        results, summary = self.diff_engine.apply_and_save(dt, pm, pp)
 
-            self.show_result_and_copy(result)
+        log_lines = ["=" * 55, "Multi-file Diff Result",
+            f"saved:{summary['saved']} failed:{summary['failed']} skipped:{summary['skipped']}",
+            "=" * 55]
+        for r in results:
+            log_lines.append(f"\n{r['filepath']}")
+            if r['resolved_path']:
+                log_lines.append(f"   -> {r['resolved_path']}")
+            for m in r['messages']:
+                log_lines.append(f"   {m}")
+        log = '\n'.join(log_lines)
 
-        elif mode == 'select':
-            code_files = self.get_code_files(project)
-            self.show_file_selector(code_files)
+        self.notebook.select(3)
+        self.github_log.config(state=tk.NORMAL)
+        self.github_log.delete("1.0", tk.END)
+        self.github_log.insert("1.0", log)
+        self.github_log.config(state=tk.DISABLED)
 
-    def show_file_selector(self, code_files):
-        selector = tk.Toplevel(self.root)
-        selector.title("파일 선택")
-        selector.geometry("600x500")
-        selector.configure(bg='#1e1e2e')
-        selector.grab_set()
+        if self._current_file_path:
+            for r in results:
+                if r['resolved_path'] == self._current_file_path and r['success']:
+                    try:
+                        c, *_ = EncodingHandler.read_file(self._current_file_path)
+                        self.code_editor.set_content(c)
+                    except: pass
+                    break
+        self._last_saved_files = [r['filepath'] for r in results if r['success']]
+        messagebox.showinfo("Done",
+            f"Saved: {summary['saved']}\nFailed: {summary['failed']}\nSkipped: {summary['skipped']}")
+        self.status_var.set(f"multi: saved {summary['saved']} failed {summary['failed']}")
+        # Check for syntax errors before auto-sync
+        has_syntax_error = any(r.get('syntax_error') for r in results)
+        if has_syntax_error:
+            messagebox.showwarning("Syntax Error",
+                "Syntax errors detected in saved files.\n"
+                "Auto-sync skipped to prevent pushing broken code.\n"
+                "Fix errors and sync manually.")
+            self.status_var.set("syntax error — auto-sync skipped")
+            return
+        if self.auto_sync.get() and summary['saved'] > 0:
+            file_list = ', '.join(self._last_saved_files[:5])
+            if len(self._last_saved_files) > 5:
+                file_list += f" +{len(self._last_saved_files)-5} more"
+            msg = f"diff applied: {file_list}"
+            self.commit_msg_var.set(msg)
+            self.root.after(500, self._do_sync)
 
-        ttk.Label(selector, text="스캔할 파일을 선택하세요:",
-                  style='Info.TLabel').pack(padx=10, pady=10)
+    # -- Prompt --
 
-        btn_frame = tk.Frame(selector, bg='#1e1e2e')
-        btn_frame.pack(fill='x', padx=10)
+    def _get_checked_files(self):
+        checked = self.tree.get_checked()
+        result = []
+        for rel, full, sz in self.all_files:
+            fn = os.path.basename(rel)
+            for cid in checked:
+                txt = self.tree.item(cid, 'text')
+                # strip checkbox prefix and warning prefix
+                clean = txt
+                for prefix in ['[v] ', '[_] ', '!! ']:
+                    if clean.startswith(prefix):
+                        clean = clean[len(prefix):]
+                clean = clean.strip()
+                if clean == fn:
+                    result.append((rel, full, sz)); break
+        return result
 
-        list_frame = tk.Frame(selector, bg='#1e1e2e')
-        list_frame.pack(fill='both', expand=True, padx=10, pady=5)
+    def _merge_and_copy(self):
+        prompt = self.prompt_text.get("1.0", tk.END).strip()
+        parts = []
+        if prompt:
+            parts.append(prompt)
+            parts.append("")
 
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side='right', fill='y')
+        if self.attach_file.get():
+            files = self._get_checked_files()
+            if not files:
+                messagebox.showwarning("warning", "no files checked"); return
 
-        listbox = tk.Listbox(list_frame, selectmode=tk.MULTIPLE,
-                             font=('Consolas', 10), bg='#313244', fg='#cdd6f4',
-                             selectbackground='#585b70', relief='flat',
-                             yscrollcommand=scrollbar.set)
-        listbox.pack(fill='both', expand=True)
-        scrollbar.config(command=listbox.yview)
+            parts.append("---")
+            parts.append(f"Attached files ({len(files)})")
+            parts.append("")
+            parts.append("When modifying files, use ONLY this line-number format:")
+            parts.append("")
+            parts.append("```")
+            parts.append("=== FILE: relative/path/file.ext ===")
+            parts.append("@@ 15-23 REPLACE")
+            parts.append("new code for lines 15 to 23")
+            parts.append("@@ END")
+            parts.append("@@ 50 DELETE 3")
+            parts.append("@@ 60 INSERT")
+            parts.append("code to insert after line 60")
+            parts.append("@@ END")
+            parts.append("=== END FILE ===")
+            parts.append("```")
+            parts.append("")
+            parts.append("Rules:")
+            parts.append("- Line numbers refer to the ORIGINAL file (shown as N| prefix)")
+            parts.append("- @@ START-END REPLACE : replace lines START through END with new content")
+            parts.append("- @@ N DELETE COUNT : delete COUNT lines starting from line N")
+            parts.append("- @@ N INSERT : insert new content AFTER line N (use 0 to insert at top)")
+            parts.append("- Each REPLACE/INSERT block must end with @@ END")
+            parts.append("- Do NOT use SEARCH/REPLACE blocks. Use ONLY @@ line commands.")
+            parts.append("- After making changes, state the REASON for each modification so it can be used as a GitHub commit message.")
+            parts.append("---")
 
-        for rel_path, full_path, size in code_files:
-            size_str = f"{size / 1024:.1f}KB" if size > 1024 else f"{size}B"
-            listbox.insert(tk.END, f"{rel_path} ({size_str})")
+            for i, (rel, full, sz) in enumerate(files, 1):
+                try:
+                    content, *_ = EncodingHandler.read_file(full)
+                except Exception:
+                    content = "(read error)"
+                ext = os.path.splitext(rel)[1].lstrip('.')
+                parts.append(f"### File {i}: {rel}")
+                parts.append(f"```{ext}")
+                for ln_num, line in enumerate(content.split('\n'), 1):
+                    parts.append(f"{ln_num:4d}| {line}")
+                parts.append("```")
+                parts.append("")
 
-        def select_all():
-            listbox.select_set(0, tk.END)
+        if not parts:
+            messagebox.showwarning("warning", "enter prompt or attach files"); return
 
-        def select_none():
-            listbox.select_clear(0, tk.END)
-
-        tk.Button(btn_frame, text="전체 선택", bg='#45475a', fg='#cdd6f4',
-                  relief='flat', command=select_all).pack(side='left', padx=2)
-        tk.Button(btn_frame, text="전체 해제", bg='#45475a', fg='#cdd6f4',
-                  relief='flat', command=select_none).pack(side='left', padx=2)
-
-        def confirm():
-            indices = listbox.curselection()
-            selected = []
-            for i in indices:
-                selected.append(code_files[i])
-            selector.destroy()
-
-            if selected:
-                project = self.project_path.get()
-                result = f"# 프로젝트 스캔 결과\n"
-                result += f"# 경로: {project}\n"
-                result += f"# 시간: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                result += f"## 선택된 파일 내용 ({len(selected)}개)\n\n"
-
-                for rel_path, full_path, size in selected:
-                    content = self.read_file_safe(full_path)
-                    ext = os.path.splitext(rel_path)[1].lstrip('.')
-                    result += f"### 📄 {rel_path}\n"
-                    result += f"```{ext}\n{content}\n```\n\n"
-
-                self.show_result_and_copy(result)
-            else:
-                self.status_var.set("파일을 선택하지 않았습니다")
-
-        def cancel():
-            selector.destroy()
-            self.status_var.set("취소됨")
-
-        ok_frame = tk.Frame(selector, bg='#1e1e2e')
-        ok_frame.pack(fill='x', padx=10, pady=10)
-        tk.Button(ok_frame, text="✅ 확인", font=('맑은 고딕', 11, 'bold'),
-                  bg='#a6e3a1', fg='#1e1e2e', relief='flat', padx=20, pady=8,
-                  command=confirm).pack(side='left', expand=True, fill='x', padx=(0, 5))
-        tk.Button(ok_frame, text="취소", font=('맑은 고딕', 11),
-                  bg='#45475a', fg='#cdd6f4', relief='flat', padx=20, pady=8,
-                  command=cancel).pack(side='left', expand=True, fill='x', padx=(5, 0))
-
-        selector.wait_window()
-
-    def show_result_and_copy(self, result):
-        """결과를 표시하고 자동으로 클립보드에 복사"""
-        self.result_text.delete('1.0', tk.END)
-        self.result_text.insert('1.0', result)
-
-        estimated_tokens = len(result) // 4
-        self.token_label.config(text=f"약 {estimated_tokens:,}토큰 | {len(result):,}자")
-
+        result = '\n'.join(parts)
         self.root.clipboard_clear()
         self.root.clipboard_append(result)
 
-        self.status_var.set(f"✅ 클립보드 복사 완료 (약 {estimated_tokens:,}토큰) → AI 채팅에 Ctrl+V")
-        messagebox.showinfo("복사 완료",
-                            f"클립보드에 복사되었습니다!\n"
-                            f"약 {estimated_tokens:,}토큰 | {len(result):,}자\n\n"
-                            f"AI 채팅창에 Ctrl+V로 붙여넣으세요.")
+        self.preview_text.config(state='normal')
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", result)
+        self.preview_text.config(state='disabled')
 
-    def copy_to_clipboard(self):
-        content = self.result_text.get('1.0', tk.END).strip()
-        if not content:
-            messagebox.showwarning("경고", "복사할 내용이 없습니다")
+        chars = len(result)
+        tokens = chars // 4
+        messagebox.showinfo("Copied",
+            f"Clipboard copied\n\nChars: {chars:,}\nTokens (est): {tokens:,}")
+        self.status_var.set(f"copied: {chars:,} chars, ~{tokens:,} tokens")
+
+    # -- GitHub --
+
+    def _upload_github(self):
+        rn = self.repo_name_var.get().strip()
+        if not rn:
+            messagebox.showwarning("warning", "enter repo name"); return
+        files = self._get_checked_files()
+        if not files:
+            messagebox.showwarning("warning", "select files to upload"); return
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first"); return
+
+        self.notebook.select(3)
+        self.github_log.config(state='normal')
+        self.github_log.delete("1.0", tk.END)
+        self.github_log.config(state='disabled')
+
+        def log_cb(msg):
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, msg + '\n')
+            self.github_log.see(tk.END)
+            self.github_log.config(state='disabled')
+
+        self.uploader.log = log_cb
+
+        if not self.uploader.check_git():
+            messagebox.showerror("error", "Git not installed"); return
+        if not self.uploader.check_gh():
+            messagebox.showerror("error", "GitHub CLI needed"); return
+        if not self.uploader.check_auth():
+            messagebox.showerror("error", "GitHub auth needed. Run: gh auth login"); return
+
+        def do_upload():
+            ok, result = self.uploader.create_and_push(
+                files, pp, rn, private=self.repo_private.get(),
+                progress_cb=lambda v: self.progress_var.set(v))
+            self.root.after(0, lambda: self._upload_done(ok, result))
+
+        self.status_var.set("uploading...")
+        threading.Thread(target=do_upload, daemon=True).start()
+
+    def _upload_done(self, ok, result):
+        self.progress_var.set(100 if ok else 0)
+        if ok:
+            self.status_var.set("upload done: " + result)
+            if messagebox.askyesno("success", f"Upload done!\n{result}\n\nCopy URL?"):
+                self.root.clipboard_clear()
+                self.root.clipboard_append(result)
+        else:
+            self.status_var.set("upload failed")
+            messagebox.showerror("failed", "Upload failed:\n" + result)
+
+    def _sync_github(self):
+        rn = self.repo_name_var.get().strip()
+        if not rn:
+            messagebox.showwarning("warning", "enter repo name"); return
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first"); return
+        msg = self.commit_msg_var.get().strip()
+        if not msg:
+            msg = "update by ProjectScan"
+        self._do_sync()
+
+    def _do_sync(self):
+        rn = self.repo_name_var.get().strip()
+        pp = self.project_path.get()
+        if not rn or not pp:
+            self.status_var.set("sync: need repo name and project path")
             return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(content)
-        self.status_var.set("✅ 클립보드에 복사됨 → AI 채팅에 Ctrl+V")
-        messagebox.showinfo("완료", "클립보드에 복사되었습니다!\n\nAI 채팅창에 Ctrl+V로 붙여넣으세요.")
+        msg = self.commit_msg_var.get().strip() or "update by ProjectScan"
+        self.notebook.select(3)
+
+        def log_cb(text):
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, text + '\n')
+            self.github_log.see(tk.END)
+            self.github_log.config(state='disabled')
+
+        self.uploader.log = log_cb
+        self.github_log.config(state='normal')
+        self.github_log.insert(tk.END, f"\n{'='*40}\nSync: {msg}\n{'='*40}\n")
+        self.github_log.config(state='disabled')
+
+        def do_work():
+            self.uploader.init_local_repo(pp, rn)
+            ok, result = self.uploader.sync_push(
+                pp, msg,
+                progress_cb=lambda v: self.progress_var.set(v))
+            self.root.after(0, lambda: self._sync_done(ok, result))
+
+        self.status_var.set("syncing to GitHub...")
+        threading.Thread(target=do_work, daemon=True).start()
+
+    def _sync_done(self, ok, result):
+        self.progress_var.set(100 if ok else 0)
+        if ok:
+            self.status_var.set(f"sync done: {result}")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[OK] {result}\n")
+            self.github_log.config(state='disabled')
+        else:
+            self.status_var.set("sync failed")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[FAIL] {result}\n")
+            self.github_log.config(state='disabled')
+            messagebox.showerror("Sync Failed", result)
+
+    def _rollback_last(self):
+        """Rollback to the previous git commit and force push."""
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first")
+            return
+        # Show recent commits for confirmation
+        ok, log_out, _ = self.uploader.run_cmd(
+            'git log --oneline -5', cwd=pp)
+        if not ok or not log_out:
+            messagebox.showerror("error", "no git history found")
+            return
+        confirm = messagebox.askyesno(
+            "Rollback",
+            f"Recent commits:\n\n{log_out}\n\nRollback to previous commit?\n"
+            "(current commit will be undone)")
+        if not confirm:
+            return
+
+        def log_cb(text):
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, text + '\n')
+            self.github_log.see(tk.END)
+            self.github_log.config(state='disabled')
+
+        self.uploader.log = log_cb
+        self.github_log.config(state='normal')
+        self.github_log.insert(tk.END, f"\n{'='*40}\nRollback\n{'='*40}\n")
+        self.github_log.config(state='disabled')
+
+        def do_rollback():
+            # Reset to previous commit (keeps nothing from current)
+            ok_r, _, err_r = self.uploader.run_cmd(
+                'git reset --hard HEAD~1', cwd=pp)
+            if not ok_r:
+                self.root.after(0, lambda: self._rollback_done(False, err_r))
+                return
+            # Get branch name
+            ok_br, br_out, _ = self.uploader.run_cmd(
+                'git branch --show-current', cwd=pp)
+            branch = br_out.strip() if ok_br and br_out and br_out.strip() else 'master'
+            # Force push the rollback
+            ok_p, _, err_p = self.uploader.run_cmd(
+                f'git push -u origin {branch} --force', cwd=pp)
+            if ok_p:
+                self.root.after(0, lambda: self._rollback_done(True, "rollback complete"))
+            else:
+                self.root.after(0, lambda: self._rollback_done(False, err_p))
+
+        threading.Thread(target=do_rollback, daemon=True).start()
+
+    def _rollback_done(self, ok, result):
+        if ok:
+            self.status_var.set("rollback done")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[OK] {result}\n")
+            self.github_log.config(state='disabled')
+            messagebox.showinfo("Rollback", "Rollback complete.\nReload files to see changes.")
+        else:
+            self.status_var.set("rollback failed")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[FAIL] {result}\n")
+            self.github_log.config(state='disabled')
+            messagebox.showerror("Rollback Failed", result)
 
 
+
+# ════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     root = tk.Tk()
     app = ProjectScan(root)
