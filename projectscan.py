@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ProjectScan v6.0 — Modular version with core package
@@ -32,6 +32,7 @@ from core import (
     GitHubUploader,
     CheckboxTreeview,
     CodeEditor,
+    CodeReviewer,
 )
 
 
@@ -79,7 +80,10 @@ class ProjectScan:
 
         self.diff_engine = LineDiffEngine()
         self.uploader = GitHubUploader()
+        self.code_reviewer = CodeReviewer(max_line_length=120)
         self._last_saved_files = []
+        self._setup_styles()
+        self._build_ui()
         self._setup_styles()
         self._build_ui()
 
@@ -185,8 +189,28 @@ class ProjectScan:
         self.github_log.pack(fill='both', expand=True, padx=3, pady=3)
         self.notebook.add(tab_gh, text=' GitHub ')
 
+        # Tab 5: Code Review
+        tab_review = ttk.Frame(self.notebook, style='Dark.TFrame')
+        review_top = ttk.Frame(tab_review, style='Dark.TFrame')
+        review_top.pack(fill='x', padx=3, pady=3)
+        ttk.Button(review_top, text="[Review Current File]", style='Accent.TButton',
+                    command=self._review_current).pack(side='left', padx=2)
+        ttk.Button(review_top, text="[Review All Checked]", style='Dark.TButton',
+                    command=self._review_checked).pack(side='left', padx=2)
+        self.review_severity = tk.StringVar(value="all")
+        ttk.Label(review_top, text="Show:", style='Dark.TLabel').pack(side='left', padx=(10,2))
+        for val, txt in [("all","All"),("warnings","Warn+Err"),("errors","Errors")]:
+            ttk.Radiobutton(review_top, text=txt, variable=self.review_severity,
+                            value=val, command=self._filter_review).pack(side='left', padx=2)
+        self.review_log = scrolledtext.ScrolledText(tab_review, bg='#181825', fg='#f9e2af',
+            font=('Consolas', 9), state='disabled', insertbackground='#f5e0dc')
+        self.review_log.pack(fill='both', expand=True, padx=3, pady=3)
+        self._last_review_issues = {}
+        self.notebook.add(tab_review, text=' Review ')
+
         main.add(right, weight=2)
         ttk.Label(self.root, textvariable=self.status_var, style='Dark.TLabel').pack(fill='x', padx=5, pady=2)
+
 
     # -- Folder/Scan --
 
@@ -488,6 +512,31 @@ class ProjectScan:
                 "Fix errors and sync manually.")
             self.status_var.set("syntax error — auto-sync skipped")
             return
+
+        # === Code Review after diff ===
+        review_files = []
+        for r in results:
+            if r['success'] and r.get('resolved_path'):
+                review_files.append((r['resolved_path'], None))
+        if review_files:
+            all_issues = self.code_reviewer.review_files(review_files)
+            if all_issues:
+                report = self.code_reviewer.format_report(all_issues, verbose=True)
+                self._last_review_issues = all_issues
+                self.review_log.config(state=tk.NORMAL)
+                self.review_log.delete("1.0", tk.END)
+                self.review_log.insert("1.0", report)
+                self.review_log.config(state=tk.DISABLED)
+                if self.code_reviewer.has_blocking_issues(all_issues):
+                    self.notebook.select(4)
+                    messagebox.showwarning("Code Review",
+                        "Errors found in code review.\n"
+                        "Auto-sync blocked. Fix errors first.")
+                    self.status_var.set("review errors — auto-sync blocked")
+                    return
+                elif self.code_reviewer.has_warnings(all_issues):
+                    self.notebook.select(4)
+
         if self.auto_sync.get() and (summary['saved'] > 0 or summary.get('created',0) > 0 or summary.get('deleted',0) > 0):
             file_list = ', '.join(self._last_saved_files[:5])
             if len(self._last_saved_files) > 5:
@@ -759,7 +808,64 @@ class ProjectScan:
             self.github_log.config(state='disabled')
             messagebox.showerror("Rollback Failed", result)
 
+    # -- Code Review --
 
+    def _review_current(self):
+        """Review the currently open file."""
+        if not self._current_file_path:
+            messagebox.showwarning("warning", "open a file first")
+            return
+        content = self.code_editor.get_content()
+        issues = self.code_reviewer.review_file(self._current_file_path, content)
+        all_issues = {self._current_file_path: issues} if issues else {}
+        self._last_review_issues = all_issues
+        report = self.code_reviewer.format_report(all_issues, verbose=True)
+        self.review_log.config(state=tk.NORMAL)
+        self.review_log.delete("1.0", tk.END)
+        self.review_log.insert("1.0", report)
+        self.review_log.config(state=tk.DISABLED)
+        self.notebook.select(4)
+        cnt = len(issues) if issues else 0
+        self.status_var.set(f"review: {cnt} issues in {os.path.basename(self._current_file_path)}")
+
+    def _review_checked(self):
+        """Review all checked files in the tree."""
+        files = self._get_checked_files()
+        if not files:
+            messagebox.showwarning("warning", "no files checked")
+            return
+        file_list = [(full, None) for rel, full, sz in files]
+        all_issues = self.code_reviewer.review_files(file_list)
+        self._last_review_issues = all_issues
+        report = self.code_reviewer.format_report(all_issues, verbose=True)
+        self.review_log.config(state=tk.NORMAL)
+        self.review_log.delete("1.0", tk.END)
+        self.review_log.insert("1.0", report)
+        self.review_log.config(state=tk.DISABLED)
+        self.notebook.select(4)
+        total = sum(len(v) for v in all_issues.values())
+        self.status_var.set(f"review: {total} issues in {len(all_issues)} files")
+
+    def _filter_review(self):
+        """Re-display the last review with severity filter applied."""
+        if not self._last_review_issues:
+            return
+        level = self.review_severity.get()
+        filtered = {}
+        for fp, issues in self._last_review_issues.items():
+            if level == 'errors':
+                fi = [i for i in issues if i['severity'] == 'error']
+            elif level == 'warnings':
+                fi = [i for i in issues if i['severity'] in ('error', 'warning')]
+            else:
+                fi = issues
+            if fi:
+                filtered[fp] = fi
+        report = self.code_reviewer.format_report(filtered, verbose=True)
+        self.review_log.config(state=tk.NORMAL)
+        self.review_log.delete("1.0", tk.END)
+        self.review_log.insert("1.0", report)
+        self.review_log.config(state=tk.DISABLED)
 
 # ════════════════════════════════════════════════════════════
 if __name__ == '__main__':

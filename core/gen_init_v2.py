@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+import os
+
+content = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ProjectScan Core Modules
@@ -18,3 +20,10 @@ __all__ = [
     'CodeEditor',
     'CodeReviewer',
 ]
+'''
+
+path = os.path.join(r"E:\genspark\core", "__init__.py")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+print(f"Updated: {path}")
+print(f"Size: {os.path.getsize(path)} bytes")
