@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ProjectScan v5.1b — Line-number Diff + GitHub Auto-sync (push fix)
@@ -1141,6 +1141,7 @@ class ProjectScan:
         ttk.Label(gh_sync, text="Commit msg:", style='Dark.TLabel').pack(side='left')
         ttk.Entry(gh_sync, textvariable=self.commit_msg_var, width=40).pack(side='left', padx=3)
         ttk.Button(gh_sync, text="[Sync to GitHub]", style='Accent.TButton', command=self._sync_github).pack(side='left', padx=3)
+        ttk.Button(gh_sync, text="[Rollback]", command=self._rollback_last).pack(side='left', padx=3)
         ttk.Checkbutton(gh_sync, text="Auto-sync after diff apply", variable=self.auto_sync, style='Dark.TCheckbutton').pack(side='left', padx=5)
         self.github_log = scrolledtext.ScrolledText(tab_gh, bg='#181825', fg='#a6e3a1', font=('Consolas', 9), state='disabled')
         self.github_log.pack(fill='both', expand=True, padx=3, pady=3)
@@ -1639,6 +1640,71 @@ class ProjectScan:
             self.github_log.insert(tk.END, f"\n[FAIL] {result}\n")
             self.github_log.config(state='disabled')
             messagebox.showerror("Sync Failed", result)
+
+    def _rollback_last(self):
+        """Rollback to the previous git commit and force push."""
+        pp = self.project_path.get()
+        if not pp:
+            messagebox.showwarning("warning", "select project folder first")
+            return
+        # Show recent commits for confirmation
+        ok, log_out, _ = self.uploader.run_cmd(
+            'git log --oneline -5', cwd=pp)
+        if not ok or not log_out:
+            messagebox.showerror("error", "no git history found")
+            return
+        confirm = messagebox.askyesno(
+            "Rollback",
+            f"Recent commits:\n\n{log_out}\n\nRollback to previous commit?\n"
+            "(current commit will be undone)")
+        if not confirm:
+            return
+
+        def log_cb(text):
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, text + '\n')
+            self.github_log.see(tk.END)
+            self.github_log.config(state='disabled')
+
+        self.uploader.log = log_cb
+        self.github_log.config(state='normal')
+        self.github_log.insert(tk.END, f"\n{'='*40}\nRollback\n{'='*40}\n")
+        self.github_log.config(state='disabled')
+
+        def do_rollback():
+            # Reset to previous commit (keeps nothing from current)
+            ok_r, _, err_r = self.uploader.run_cmd(
+                'git reset --hard HEAD~1', cwd=pp)
+            if not ok_r:
+                self.root.after(0, lambda: self._rollback_done(False, err_r))
+                return
+            # Get branch name
+            ok_br, br_out, _ = self.uploader.run_cmd(
+                'git branch --show-current', cwd=pp)
+            branch = br_out.strip() if ok_br and br_out and br_out.strip() else 'master'
+            # Force push the rollback
+            ok_p, _, err_p = self.uploader.run_cmd(
+                f'git push -u origin {branch} --force', cwd=pp)
+            if ok_p:
+                self.root.after(0, lambda: self._rollback_done(True, "rollback complete"))
+            else:
+                self.root.after(0, lambda: self._rollback_done(False, err_p))
+
+        threading.Thread(target=do_rollback, daemon=True).start()
+
+    def _rollback_done(self, ok, result):
+        if ok:
+            self.status_var.set("rollback done")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[OK] {result}\n")
+            self.github_log.config(state='disabled')
+            messagebox.showinfo("Rollback", "Rollback complete.\nReload files to see changes.")
+        else:
+            self.status_var.set("rollback failed")
+            self.github_log.config(state='normal')
+            self.github_log.insert(tk.END, f"\n[FAIL] {result}\n")
+            self.github_log.config(state='disabled')
+            messagebox.showerror("Rollback Failed", result)
 
 
 # ════════════════════════════════════════════════════════════
