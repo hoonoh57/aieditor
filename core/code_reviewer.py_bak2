@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-code_reviewer.py - Automated code review for ProjectScan v6.0
+code_reviewer.py — Automated code review for ProjectScan v6.0
 Performs lint-level checks after diff application:
   - Python: syntax, unused imports, undefined names, indentation, style
   - C#/Java/etc: brace balance, namespace/class structure
@@ -14,10 +14,8 @@ import ast
 import sys
 
 from .diff_engine import (
-    strip_strings_and_comments,
-    check_brace_balance,
-    is_brace_language,
-    BRACE_LANGUAGES,
+    strip_strings_and_comments, check_brace_balance,
+    is_brace_language, BRACE_LANGUAGES,
 )
 
 
@@ -29,10 +27,12 @@ class CodeReviewer:
        'code': str, 'message': str}
     """
 
+    # Severity levels
     ERROR = 'error'
     WARNING = 'warning'
     INFO = 'info'
 
+    # Issue codes
     CODES = {
         'E001': 'Syntax error',
         'E002': 'Indentation error',
@@ -61,11 +61,13 @@ class CodeReviewer:
         'set', 'tuple', 'bool', 'type', 'id', 'input', 'open', 'file',
         'map', 'filter', 'zip', 'enumerate', 'sorted', 'reversed',
         'min', 'max', 'sum', 'abs', 'round', 'hash', 'repr', 'isinstance',
-        'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr', 'callable',
-        'super', 'property', 'staticmethod', 'classmethod', 'object',
+        'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr',
+        'callable', 'super', 'property', 'staticmethod', 'classmethod',
+        'object',
         'Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError',
-        'AttributeError', 'ImportError', 'OSError', 'IOError', 'FileNotFoundError',
-        'RuntimeError', 'StopIteration', 'NotImplementedError', 'NameError',
+        'AttributeError', 'ImportError', 'OSError', 'IOError',
+        'FileNotFoundError', 'RuntimeError', 'StopIteration',
+        'NotImplementedError', 'NameError',
         'True', 'False', 'None', 'self', 'cls',
     }
 
@@ -79,7 +81,8 @@ class CodeReviewer:
         re.compile(r'^\s*ipdb\.set_trace\s*\('),
     ]
 
-    TODO_PATTERN = re.compile(r'#\s*(TODO|FIXME|HACK|XXX)\b', re.IGNORECASE)
+    TODO_PATTERN = re.compile(
+        r'#\s*(TODO|FIXME|HACK|XXX)\b', re.IGNORECASE)
 
     MAX_LINE_LENGTH = 120
 
@@ -87,11 +90,13 @@ class CodeReviewer:
         self.MAX_LINE_LENGTH = max_line_length
 
     def review_file(self, filepath, content=None):
+        """Review a single file. Returns list of issues."""
         if content is None:
             if not os.path.isfile(filepath):
                 return []
             try:
-                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                with open(filepath, 'r', encoding='utf-8',
+                          errors='replace') as f:
                     content = f.read()
             except Exception:
                 return []
@@ -107,31 +112,45 @@ class CodeReviewer:
 
         issues = []
 
-        # Universal checks
+        # Universal checks (all file types)
         issues.extend(self._check_whitespace(filepath, content))
         issues.extend(self._check_todos(filepath, content))
 
         # Brace-based language checks (C#, Java, C++, etc.)
         if ext in BRACE_LANGUAGES:
-            issues.extend(self._check_brace_balance_review(filepath, content))
-            issues.extend(self._check_namespace_class_structure(filepath, content, ext))
+            issues.extend(
+                self._check_brace_balance_review(filepath, content))
+            issues.extend(
+                self._check_namespace_class_structure(
+                    filepath, content, ext))
 
         # Python-specific checks
         if ext == '.py':
-            issues.extend(self._check_python_syntax(filepath, content))
-            issues.extend(self._check_python_imports(filepath, content))
-            issues.extend(self._check_python_style(filepath, content))
-            issues.extend(self._check_python_patterns(filepath, content))
+            issues.extend(
+                self._check_python_syntax(filepath, content))
+            issues.extend(
+                self._check_python_imports(filepath, content))
+            issues.extend(
+                self._check_python_style(filepath, content))
+            issues.extend(
+                self._check_python_patterns(filepath, content))
 
         # JavaScript/TypeScript checks
         elif ext in ('.js', '.ts', '.jsx', '.tsx'):
             issues.extend(self._check_js_patterns(filepath, content))
 
+        # Sort by severity then line number
         severity_order = {self.ERROR: 0, self.WARNING: 1, self.INFO: 2}
-        issues.sort(key=lambda x: (severity_order.get(x['severity'], 9), x['line']))
+        issues.sort(key=lambda x: (
+            severity_order.get(x['severity'], 9), x['line']))
         return issues
 
     def review_files(self, file_list):
+        """
+        Review multiple files.
+        file_list: list of (filepath, content_or_None)
+        Returns dict: {filepath: [issues]}
+        """
         all_issues = {}
         for filepath, content in file_list:
             issues = self.review_file(filepath, content)
@@ -140,55 +159,72 @@ class CodeReviewer:
         return all_issues
 
     def format_report(self, all_issues, verbose=False):
+        """Format issues into a human-readable report string."""
         if not all_issues:
             return "[Code Review] No issues found."
 
         lines = ["=" * 55, "Code Review Report", "=" * 55]
+
         total_errors = 0
         total_warnings = 0
         total_info = 0
 
         for filepath, issues in all_issues.items():
             errors = [i for i in issues if i['severity'] == self.ERROR]
-            warnings = [i for i in issues if i['severity'] == self.WARNING]
+            warnings = [
+                i for i in issues if i['severity'] == self.WARNING]
             infos = [i for i in issues if i['severity'] == self.INFO]
+
             total_errors += len(errors)
             total_warnings += len(warnings)
             total_info += len(infos)
+
             rel = os.path.basename(filepath)
-            lines.append("\n--- %s ---" % rel)
-            lines.append("  Errors: %d  Warnings: %d  Info: %d" % (len(errors), len(warnings), len(infos)))
+            lines.append(f"\n--- {rel} ---")
+            lines.append(
+                f"  Errors: {len(errors)}  "
+                f"Warnings: {len(warnings)}  Info: {len(infos)}")
+
             for issue in issues:
                 sev = issue['severity'].upper()
                 ln = issue['line']
                 code = issue['code']
                 msg = issue['message']
                 if verbose or issue['severity'] != self.INFO:
-                    lines.append("  L%4d [%-7s] %s: %s" % (ln, sev, code, msg))
+                    lines.append(
+                        f"  L{ln:4d} [{sev:7s}] {code}: {msg}")
 
-        lines.append("\n" + "=" * 55)
-        lines.append("Total: %d errors, %d warnings, %d info" % (total_errors, total_warnings, total_info))
+        lines.append(f"\n{'=' * 55}")
+        lines.append(
+            f"Total: {total_errors} errors, "
+            f"{total_warnings} warnings, {total_info} info")
+
         if total_errors > 0:
-            lines.append("[!] ERRORS found - auto-sync will be blocked")
+            lines.append(
+                "[!] ERRORS found — auto-sync will be blocked")
         elif total_warnings > 0:
-            lines.append("[*] Warnings found - review recommended before sync")
+            lines.append(
+                "[*] Warnings found — review recommended before sync")
         else:
             lines.append("[OK] Code looks clean")
+
         return '\n'.join(lines)
 
     def has_blocking_issues(self, all_issues):
+        """Return True if there are errors that should block auto-sync."""
         for issues in all_issues.values():
             if any(i['severity'] == self.ERROR for i in issues):
                 return True
         return False
 
     def has_warnings(self, all_issues):
+        """Return True if there are warnings."""
         for issues in all_issues.values():
             if any(i['severity'] == self.WARNING for i in issues):
                 return True
         return False
 
-    # -- Internal helpers --
+    # ── Internal helpers ──
 
     def _issue(self, filepath, line, severity, code, message):
         return {
@@ -199,26 +235,37 @@ class CodeReviewer:
             'message': message,
         }
 
-    # -- Universal checks --
+    # ── Universal checks ──
 
     def _check_whitespace(self, fp, content):
         issues = []
         lines = content.split('\n')
         has_tabs = False
         has_spaces = False
+
         for i, line in enumerate(lines, 1):
             if line != line.rstrip() and line.strip():
-                issues.append(self._issue(fp, i, self.INFO, 'W006', 'Trailing whitespace'))
+                issues.append(self._issue(
+                    fp, i, self.INFO, 'W006',
+                    'Trailing whitespace'))
+
             if len(line) > self.MAX_LINE_LENGTH:
-                issues.append(self._issue(fp, i, self.INFO, 'W007',
-                    'Line too long (%d > %d)' % (len(line), self.MAX_LINE_LENGTH)))
+                issues.append(self._issue(
+                    fp, i, self.INFO, 'W007',
+                    f'Line too long '
+                    f'({len(line)} > {self.MAX_LINE_LENGTH})'))
+
             if line and line[0] == '\t':
                 has_tabs = True
-            elif line and line[0] == ' ' and len(line) > len(line.lstrip()):
+            elif (line and line[0] == ' '
+                  and len(line) > len(line.lstrip())):
                 has_spaces = True
+
         if has_tabs and has_spaces:
-            issues.append(self._issue(fp, 1, self.WARNING, 'W005',
+            issues.append(self._issue(
+                fp, 1, self.WARNING, 'W005',
                 'Mixed tabs and spaces for indentation'))
+
         return issues
 
     def _check_todos(self, fp, content):
@@ -226,20 +273,23 @@ class CodeReviewer:
         for i, line in enumerate(content.split('\n'), 1):
             m = self.TODO_PATTERN.search(line)
             if m:
-                issues.append(self._issue(fp, i, self.INFO, 'I001',
-                    '%s comment found' % m.group(1).upper()))
+                issues.append(self._issue(
+                    fp, i, self.INFO, 'I001',
+                    f'{m.group(1).upper()} comment found'))
         return issues
 
-    # -- Brace-based language checks (C#, Java, C++, etc.) --
+    # ── Brace-based language checks (C#, Java, C++, etc.) ──
 
     def _check_brace_balance_review(self, fp, content):
-        """Check brace balance using stack - ERROR level."""
+        """Check brace balance using stack — ERROR level."""
         issues = []
         cleaned = strip_strings_and_comments(content)
+
         pairs = {'{': '}', '(': ')', '[': ']'}
         close_to_open = {v: k for k, v in pairs.items()}
         stack = []
         line_num = 1
+
         for ch in cleaned:
             if ch == '\n':
                 line_num += 1
@@ -249,26 +299,36 @@ class CodeReviewer:
             elif ch in close_to_open:
                 expected_open = close_to_open[ch]
                 if not stack:
-                    issues.append(self._issue(fp, line_num, self.ERROR, 'E012',
-                        "Unexpected '%s' with no matching '%s'" % (ch, expected_open)))
+                    issues.append(self._issue(
+                        fp, line_num, self.ERROR, 'E012',
+                        f"Unexpected '{ch}' with no matching "
+                        f"'{expected_open}'"))
                     continue
                 top_ch, top_line = stack[-1]
                 if top_ch != expected_open:
-                    issues.append(self._issue(fp, line_num, self.ERROR, 'E011',
-                        "Mismatched '%s', expected closing for '%s' opened at line %d"
-                        % (ch, top_ch, top_line)))
+                    issues.append(self._issue(
+                        fp, line_num, self.ERROR, 'E011',
+                        f"Mismatched '{ch}', expected closing "
+                        f"for '{top_ch}' opened at line {top_line}"))
                     stack.pop()
                 else:
                     stack.pop()
+
         for ch, ln in stack:
             close_ch = pairs[ch]
-            issues.append(self._issue(fp, ln, self.ERROR, 'E010',
-                "Unclosed '%s' - missing '%s'" % (ch, close_ch)))
+            issues.append(self._issue(
+                fp, ln, self.ERROR, 'E010',
+                f"Unclosed '{ch}' — missing '{close_ch}'"))
+
         opens = cleaned.count('{')
         closes = cleaned.count('}')
         if opens != closes:
-            issues.append(self._issue(fp, 1, self.WARNING, 'W020',
-                "Brace count mismatch: { = %d, } = %d (diff = %d)" % (opens, closes, opens - closes)))
+            issues.append(self._issue(
+                fp, 1, self.WARNING, 'W020',
+                f"Brace count mismatch: "
+                f"{{ = {opens}, }} = {closes} "
+                f"(diff = {opens - closes})"))
+
         return issues
 
     def _check_namespace_class_structure(self, fp, content, ext):
@@ -276,45 +336,60 @@ class CodeReviewer:
         issues = []
         if ext not in ('.cs', '.java'):
             return issues
+
         cleaned = strip_strings_and_comments(content)
         lines = content.split('\n')
         cleaned_lines = cleaned.split('\n')
+
         brace_depth = 0
         for i, line in enumerate(lines, 1):
             stripped = line.strip()
-            if ext == '.cs' and re.match(r'^\s*namespace\s+', stripped):
+
+            if ext == '.cs' and re.match(
+                    r'^\s*namespace\s+', stripped):
                 if brace_depth > 1:
-                    issues.append(self._issue(fp, i, self.WARNING, 'W020',
-                        "namespace declared at depth %d - possible brace error" % brace_depth))
+                    issues.append(self._issue(
+                        fp, i, self.WARNING, 'W020',
+                        "namespace declared at depth "
+                        f"{brace_depth} — possible brace error"))
+
             if i <= len(cleaned_lines):
                 clean_line = cleaned_lines[i - 1]
             else:
                 clean_line = ''
+
             for ch in clean_line:
                 if ch == '{':
                     brace_depth += 1
                 elif ch == '}':
                     brace_depth -= 1
                     if brace_depth < 0:
-                        issues.append(self._issue(fp, i, self.ERROR, 'E010',
-                            "Brace depth went negative - extra closing brace"))
+                        issues.append(self._issue(
+                            fp, i, self.ERROR, 'E010',
+                            "Brace depth went negative "
+                            "— extra closing brace"))
                         brace_depth = 0
+
         if brace_depth != 0:
-            if brace_depth > 0:
-                direction = "missing closing"
-            else:
-                direction = "extra closing"
-            issues.append(self._issue(fp, len(lines), self.ERROR, 'E010',
-                "File ends with brace depth %d - %s braces" % (brace_depth, direction)))
+            direction = ("missing closing"
+                         if brace_depth > 0
+                         else "extra closing")
+            issues.append(self._issue(
+                fp, len(lines), self.ERROR, 'E010',
+                f"File ends with brace depth {brace_depth}"
+                f" — {direction} braces"))
+
         return issues
 
-    # -- Python checks --
+    # ── Python checks ──
 
     def _check_python_syntax(self, fp, content):
+        """Check Python syntax using ast.parse."""
         issues = []
         clean = content.lstrip('\ufeff')
         if content.startswith('\ufeff'):
-            issues.append(self._issue(fp, 1, self.INFO, 'I003',
+            issues.append(self._issue(
+                fp, 1, self.INFO, 'I003',
                 'File has UTF-8 BOM marker (normal for Windows)'))
         try:
             ast.parse(clean, filename=fp)
@@ -322,19 +397,23 @@ class CodeReviewer:
             ln = e.lineno or 0
             msg = e.msg if hasattr(e, 'msg') else str(e)
             if 'indent' in msg.lower():
-                issues.append(self._issue(fp, ln, self.ERROR, 'E002',
-                    'Indentation error: ' + msg))
+                issues.append(self._issue(
+                    fp, ln, self.ERROR, 'E002',
+                    f'Indentation error: {msg}'))
             else:
-                issues.append(self._issue(fp, ln, self.ERROR, 'E001',
-                    'Syntax error: ' + msg))
+                issues.append(self._issue(
+                    fp, ln, self.ERROR, 'E001',
+                    f'Syntax error: {msg}'))
         return issues
 
     def _check_python_imports(self, fp, content):
+        """Check for unused, duplicate, and wildcard imports."""
         issues = []
         try:
             tree = ast.parse(content, filename=fp)
         except SyntaxError:
             return issues
+
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -343,19 +422,25 @@ class CodeReviewer:
                     imports.append((name, alias.name, node.lineno))
             elif isinstance(node, ast.ImportFrom):
                 if node.names and node.names[0].name == '*':
-                    issues.append(self._issue(fp, node.lineno, self.WARNING,
-                        'W003', 'Wildcard import: from %s import *' % node.module))
+                    issues.append(self._issue(
+                        fp, node.lineno, self.WARNING, 'W003',
+                        f'Wildcard import: '
+                        f'from {node.module} import *'))
                     continue
                 for alias in node.names:
                     name = alias.asname if alias.asname else alias.name
                     imports.append((name, alias.name, node.lineno))
+
         seen = {}
         for name, orig, ln in imports:
             if name in seen:
-                issues.append(self._issue(fp, ln, self.WARNING, 'W004',
-                    'Duplicate import: %s (first at line %d)' % (name, seen[name])))
+                issues.append(self._issue(
+                    fp, ln, self.WARNING, 'W004',
+                    f'Duplicate import: {name} '
+                    f'(first at line {seen[name]})'))
             else:
                 seen[name] = ln
+
         lines = content.split('\n')
         for name, orig, ln in imports:
             pattern = re.compile(r'\b' + re.escape(name) + r'\b')
@@ -367,64 +452,97 @@ class CodeReviewer:
                     used = True
                     break
             if not used:
-                issues.append(self._issue(fp, ln, self.WARNING, 'W001',
-                    'Unused import: ' + name))
+                issues.append(self._issue(
+                    fp, ln, self.WARNING, 'W001',
+                    f'Unused import: {name}'))
+
         return issues
 
     def _check_python_style(self, fp, content):
+        """Check Python-specific style issues."""
         issues = []
         try:
             tree = ast.parse(content, filename=fp)
         except SyntaxError:
             return issues
+
         for node in ast.walk(tree):
             if isinstance(node, ast.ExceptHandler):
                 if node.type is None:
-                    issues.append(self._issue(fp, node.lineno, self.WARNING,
-                        'W009', 'Bare except clause (catches all exceptions including SystemExit, KeyboardInterrupt)'))
-                if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                    issues.append(self._issue(fp, node.lineno, self.INFO,
-                        'I002', 'Empty except block (pass only)'))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for default in node.args.defaults + node.args.kw_defaults:
+                    issues.append(self._issue(
+                        fp, node.lineno, self.WARNING, 'W009',
+                        'Bare except clause (catches all '
+                        'exceptions including SystemExit, '
+                        'KeyboardInterrupt)'))
+                if (len(node.body) == 1
+                        and isinstance(node.body[0], ast.Pass)):
+                    issues.append(self._issue(
+                        fp, node.lineno, self.INFO, 'I002',
+                        'Empty except block (pass only)'))
+
+            if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for default in (node.args.defaults
+                                + node.args.kw_defaults):
                     if default is None:
                         continue
-                    if isinstance(default, (ast.List, ast.Dict, ast.Set)):
-                        issues.append(self._issue(fp, node.lineno, self.WARNING,
-                            'W010', 'Mutable default argument in %s()' % node.name))
+                    if isinstance(
+                            default, (ast.List, ast.Dict, ast.Set)):
+                        issues.append(self._issue(
+                            fp, node.lineno, self.WARNING, 'W010',
+                            f'Mutable default argument '
+                            f'in {node.name}()'))
                         break
+
                 if node.name in self.PYTHON_BUILTINS:
-                    issues.append(self._issue(fp, node.lineno, self.WARNING,
-                        'W011', 'Function name "%s" shadows a built-in' % node.name))
+                    issues.append(self._issue(
+                        fp, node.lineno, self.WARNING, 'W011',
+                        f'Function name "{node.name}" '
+                        f'shadows a built-in'))
+
         return issues
 
     def _check_python_patterns(self, fp, content):
+        """Check for debug statements and other patterns."""
         issues = []
         lines = content.split('\n')
+
         for i, line in enumerate(lines, 1):
             for pat in self.DEBUG_PATTERNS:
                 if pat.search(line):
-                    issues.append(self._issue(fp, i, self.WARNING, 'W008',
-                        'Debug statement: ' + line.strip()[:60]))
+                    issues.append(self._issue(
+                        fp, i, self.WARNING, 'W008',
+                        f'Debug statement: '
+                        f'{line.strip()[:60]}'))
                     break
+
         return issues
 
-    # -- JavaScript/TypeScript checks --
+    # ── JavaScript/TypeScript checks ──
 
     def _check_js_patterns(self, fp, content):
+        """Basic JS/TS checks."""
         issues = []
         lines = content.split('\n')
-        console_re = re.compile(r'^\s*console\.(log|debug|warn|error|info)\s*\(')
+
+        console_re = re.compile(
+            r'^\s*console\.(log|debug|warn|error|info)\s*\(')
         debugger_re = re.compile(r'^\s*debugger\s*;?\s*$')
         alert_re = re.compile(r'^\s*alert\s*\(')
+
         for i, line in enumerate(lines, 1):
             if console_re.search(line):
-                issues.append(self._issue(fp, i, self.INFO, 'W008',
-                    'console.log left in code: ' + line.strip()[:60]))
+                issues.append(self._issue(
+                    fp, i, self.INFO, 'W008',
+                    f'console.log left in code: '
+                    f'{line.strip()[:60]}'))
             if debugger_re.match(line):
-                issues.append(self._issue(fp, i, self.WARNING, 'W008',
+                issues.append(self._issue(
+                    fp, i, self.WARNING, 'W008',
                     'debugger statement'))
             if alert_re.search(line):
-                issues.append(self._issue(fp, i, self.INFO, 'W008',
+                issues.append(self._issue(
+                    fp, i, self.INFO, 'W008',
                     'alert() call'))
+
         return issues

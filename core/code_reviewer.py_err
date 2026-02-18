@@ -1,0 +1,756 @@
+﻿#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+code_reviewer.py — Automated code review skill for ProjectScan v6.0
+Performs lint-level checks after diff application:
+  - Python: syntax, unused imports, undefined names, indentation, style
+  - General: trailing whitespace, mixed tabs/spaces, very long lines, debug prints
+"""
+
+import re
+import os
+import ast
+import sys
+
+
+class CodeReviewer:
+    """
+    Lightweight code reviewer that works without external dependencies.
+    Returns a list of Issue dicts:
+      {'file': str, 'line': int, 'severity': 'error'|'warning'|'info',
+       'code': str, 'message': str}
+    """
+
+    # Severity levels
+    ERROR = 'error'
+    WARNING = 'warning'
+    INFO = 'info'
+
+    # Issue codes
+    CODES = {
+        'E001': 'Syntax error',
+        'E002': 'Indentation error',
+        'E010': 'Brace imbalance (unclosed)',
+        'E011': 'Brace mismatch (wrong closing bracket)',
+        'E012': 'Unexpected closing bracket',
+        'W001': 'Unused import',
+        'W002': 'Undefined name used',
+        'W003': 'Wildcard import (from x import *)',
+        'W004': 'Duplicate import',
+        'W005': 'Mixed tabs and spaces',
+        'W006': 'Trailing whitespace',
+        'W007': 'Line too long',
+        'W008': 'Debug print/breakpoint left in code',
+        'W009': 'Bare except clause',
+        'W010': 'Mutable default argument',
+        'W011': 'Redefined built-in name',
+        'W012': 'Unreachable code after return/break/continue',
+        'W020': 'Brace balance warning (in partial file)',
+        'I001': 'TODO/FIXME/HACK/XXX comment found',
+        'I002': 'Empty except block',
+    }
+        'W005': 'Mixed tabs and spaces',
+        'W006': 'Trailing whitespace',
+        'W007': 'Line too long',
+        'W008': 'Debug print/breakpoint left in code',
+        'W009': 'Bare except clause',
+        'W010': 'Mutable default argument',
+        'W011': 'Redefined built-in name',
+        'W012': 'Unreachable code after return/break/continue',
+        'I001': 'TODO/FIXME/HACK/XXX comment found',
+        'I002': 'Empty except block',
+    }
+
+    PYTHON_BUILTINS = {
+        'print', 'len', 'range', 'int', 'str', 'float', 'list', 'dict',
+        'set', 'tuple', 'bool', 'type', 'id', 'input', 'open', 'file',
+        'map', 'filter', 'zip', 'enumerate', 'sorted', 'reversed',
+        'min', 'max', 'sum', 'abs', 'round', 'hash', 'repr', 'isinstance',
+        'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr', 'callable',
+        'super', 'property', 'staticmethod', 'classmethod', 'object',
+        'Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError',
+        'AttributeError', 'ImportError', 'OSError', 'IOError', 'FileNotFoundError',
+        'RuntimeError', 'StopIteration', 'NotImplementedError', 'NameError',
+        'True', 'False', 'None', 'self', 'cls',
+    }
+
+    DEBUG_PATTERNS = [
+        re.compile(r'^\s*print\s*\(.*debug', re.IGNORECASE),
+        re.compile(r'^\s*print\s*\(.*TODO', re.IGNORECASE),
+        re.compile(r'^\s*breakpoint\s*\('),
+        re.compile(r'^\s*import\s+pdb'),
+        re.compile(r'^\s*pdb\.set_trace\s*\('),
+        re.compile(r'^\s*import\s+ipdb'),
+        re.compile(r'^\s*ipdb\.set_trace\s*\('),
+    ]
+
+    TODO_PATTERN = re.compile(r'#\s*(TODO|FIXME|HACK|XXX)\b', re.IGNORECASE)
+
+    MAX_LINE_LENGTH = 120
+
+    def __init__(self, max_line_length=120):
+        self.MAX_LINE_LENGTH = max_line_length
+
+    def review_file(self, filepath, content=None):
+        """Review a single file. Returns list of issues."""
+        if content is None:
+            if not os.path.isfile(filepath):
+                return []  # Skip non-existent files silently
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+            except Exception:
+                return []  # Skip unreadable files
+
+        ext = os.path.splitext(filepath)[1].lower()
+
+        # Only review code files
+        reviewable = {'.py', '.js', '.ts', '.jsx', '.tsx', '.cs', '.vb',
+                      '.java', '.go', '.rs', '.rb', '.php', '.swift', '.kt'}
+        if ext not in reviewable:
+            return []
+        issues = []
+
+        # Universal checks (all file types)
+        issues.extend(self._check_whitespace(filepath, content))
+        issues.extend(self._check_todos(filepath, content))
+
+        # Brace-based language checks (C#, VB, Java, C++, etc.)
+        brace_ext = {'.cs', '.vb', '.java', '.js', '.ts', '.jsx', '.tsx',
+                     '.go', '.rs', '.swift', '.kt', '.cpp', '.c', '.h', '.hpp'}
+        if ext in brace_ext:
+            issues.extend(self._check_brace_balance(filepath, content))
+            issues.extend(self._check_namespace_class_structure(filepath, content, ext))
+
+        # Python-specific checks
+        if ext == '.py':
+            issues.extend(self._check_python_imports(filepath, content))
+            issues.extend(self._check_python_style(filepath, content))
+            issues.extend(self._check_python_patterns(filepath, content))
+
+        # JavaScript/TypeScript checks
+        elif ext in ('.js', '.ts', '.jsx', '.tsx'):
+            issues.extend(self._check_js_patterns(filepath, content))
+
+        # Sort by severity then line number
+        severity_order = {self.ERROR: 0, self.WARNING: 1, self.INFO: 2}
+        issues.sort(key=lambda x: (severity_order.get(x['severity'], 9), x['line']))
+        return issues
+
+    def review_files(self, file_list):
+        """
+        Review multiple files.
+        file_list: list of (filepath, content_or_None)
+        Returns dict: {filepath: [issues]}
+        """
+        all_issues = {}
+        for filepath, content in file_list:
+            issues = self.review_file(filepath, content)
+            if issues:
+                all_issues[filepath] = issues
+        return all_issues
+
+    def format_report(self, all_issues, verbose=False):
+        """Format issues into a human-readable report string."""
+        if not all_issues:
+            return "[Code Review] No issues found."
+
+        lines = ["=" * 55, "Code Review Report", "=" * 55]
+
+        total_errors = 0
+        total_warnings = 0
+        total_info = 0
+
+        for filepath, issues in all_issues.items():
+            errors = [i for i in issues if i['severity'] == self.ERROR]
+            warnings = [i for i in issues if i['severity'] == self.WARNING]
+            infos = [i for i in issues if i['severity'] == self.INFO]
+
+            total_errors += len(errors)
+            total_warnings += len(warnings)
+            total_info += len(infos)
+
+            rel = os.path.basename(filepath)
+            lines.append(f"\n--- {rel} ---")
+            lines.append(f"  Errors: {len(errors)}  Warnings: {len(warnings)}  Info: {len(infos)}")
+
+            for issue in issues:
+                sev = issue['severity'].upper()
+                ln = issue['line']
+                code = issue['code']
+                msg = issue['message']
+                if verbose or issue['severity'] != self.INFO:
+                    lines.append(f"  L{ln:4d} [{sev:7s}] {code}: {msg}")
+
+        lines.append(f"\n{'=' * 55}")
+        lines.append(f"Total: {total_errors} errors, {total_warnings} warnings, {total_info} info")
+
+        if total_errors > 0:
+            lines.append("[!] ERRORS found — auto-sync will be blocked")
+        elif total_warnings > 0:
+            lines.append("[*] Warnings found — review recommended before sync")
+        else:
+            lines.append("[OK] Code looks clean")
+
+        return '\n'.join(lines)
+
+    def has_blocking_issues(self, all_issues):
+        """Return True if there are errors that should block auto-sync."""
+        for issues in all_issues.values():
+            if any(i['severity'] == self.ERROR for i in issues):
+                return True
+        return False
+
+    def has_warnings(self, all_issues):
+        """Return True if there are warnings."""
+        for issues in all_issues.values():
+            if any(i['severity'] == self.WARNING for i in issues):
+                return True
+        return False
+
+    # ── Internal helpers ──
+
+    def _issue(self, filepath, line, severity, code, message):
+        return {
+            'file': filepath,
+            'line': line,
+            'severity': severity,
+            'code': code,
+            'message': message,
+        }
+
+    # ── Universal checks ──
+
+    def _check_whitespace(self, fp, content):
+        issues = []
+        lines = content.split('\n')
+        has_tabs = False
+        has_spaces = False
+
+        for i, line in enumerate(lines, 1):
+            # Trailing whitespace
+            if line != line.rstrip() and line.strip():
+                issues.append(self._issue(fp, i, self.INFO, 'W006',
+                    'Trailing whitespace'))
+
+            # Line too long
+            if len(line) > self.MAX_LINE_LENGTH:
+                issues.append(self._issue(fp, i, self.INFO, 'W007',
+                    f'Line too long ({len(line)} > {self.MAX_LINE_LENGTH})'))
+
+            # Track indentation style
+            if line and line[0] == '\t':
+                has_tabs = True
+            elif line and line[0] == ' ' and len(line) > len(line.lstrip()):
+                has_spaces = True
+
+        if has_tabs and has_spaces:
+            issues.append(self._issue(fp, 1, self.WARNING, 'W005',
+                'Mixed tabs and spaces for indentation'))
+
+        return issues
+
+    def _check_todos(self, fp, content):
+        issues = []
+        for i, line in enumerate(content.split('\n'), 1):
+            m = self.TODO_PATTERN.search(line)
+            if m:
+                issues.append(self._issue(fp, i, self.INFO, 'I001',
+                    f'{m.group(1).upper()} comment found'))
+        return issues
+
+    # ── Python checks ──
+
+    def _check_python_syntax(self, fp, content):
+        """Check Python syntax using ast.parse."""
+        issues = []
+        # Strip BOM before parsing (common in Windows UTF-8 files)
+        clean = content.lstrip('\ufeff')
+        if content.startswith('\ufeff'):
+            issues.append(self._issue(fp, 1, self.INFO, 'I003',
+                'File has UTF-8 BOM marker (normal for Windows)'))
+        try:
+            ast.parse(clean, filename=fp)
+        except SyntaxError as e:
+            ln = e.lineno or 0
+            msg = e.msg if hasattr(e, 'msg') else str(e)
+            if 'indent' in msg.lower():
+                issues.append(self._issue(fp, ln, self.ERROR, 'E002',
+                    f'Indentation error: {msg}'))
+            else:
+                issues.append(self._issue(fp, ln, self.ERROR, 'E001',
+                    f'Syntax error: {msg}'))
+        return issues
+
+    def _check_python_imports(self, fp, content):
+        """Check for unused, duplicate, and wildcard imports."""
+        issues = []
+        try:
+            tree = ast.parse(content, filename=fp)
+        except SyntaxError:
+            return issues
+
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    imports.append((name, alias.name, node.lineno))
+            elif isinstance(node, ast.ImportFrom):
+                if node.names and node.names[0].name == '*':
+                    issues.append(self._issue(fp, node.lineno, self.WARNING,
+                        'W003', f'Wildcard import: from {node.module} import *'))
+                    continue
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    imports.append((name, alias.name, node.lineno))
+
+        # Check duplicates
+        seen = {}
+        for name, orig, ln in imports:
+            if name in seen:
+                issues.append(self._issue(fp, ln, self.WARNING, 'W004',
+                    f'Duplicate import: {name} (first at line {seen[name]})'))
+        return issues
+
+    # ── Brace-based language checks (C#, Java, C++, etc.) ──
+
+    @staticmethod
+    def _strip_strings_and_comments(text):
+        """문자열 리터럴과 주석을 제거하여 중괄호 카운팅 정확도 향상"""
+        result = []
+        i = 0
+        in_string = None
+        in_line_comment = False
+        in_block_comment = False
+
+        while i < len(text):
+            c = text[i]
+
+            if in_block_comment:
+                if c == '*' and i + 1 < len(text) and text[i + 1] == '/':
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+
+            if in_line_comment:
+                if c == '\n':
+                    in_line_comment = False
+                    result.append(c)
+                i += 1
+                continue
+
+            if in_string:
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == in_string:
+                    in_string = None
+                i += 1
+                continue
+
+            if c == '/' and i + 1 < len(text):
+                if text[i + 1] == '*':
+                    in_block_comment = True
+                    i += 2
+                    continue
+                if text[i + 1] == '/':
+                    in_line_comment = True
+                    i += 2
+                    continue
+
+            if c in ('"', "'"):
+                in_string = c
+                i += 1
+                continue
+
+            result.append(c)
+            i += 1
+
+        return ''.join(result)
+
+    def _check_brace_balance(self, fp, content):
+        """중괄호/소괄호/대괄호 밸런스 검사 — ERROR 레벨"""
+        issues = []
+        cleaned = self._strip_strings_and_comments(content)
+
+        pairs = {'{': '}', '(': ')', '[': ']'}
+        close_to_open = {v: k for k, v in pairs.items()}
+        stack = []
+        line_num = 1
+
+        for ch in cleaned:
+            if ch == '\n':
+                line_num += 1
+                continue
+            if ch in pairs:
+                stack.append((ch, line_num))
+            elif ch in close_to_open:
+                expected_open = close_to_open[ch]
+                if not stack:
+                    issues.append(self._issue(fp, line_num, self.ERROR, 'E012',
+                        f"Unexpected '{ch}' with no matching '{expected_open}'"))
+                    continue
+                top_ch, top_line = stack[-1]
+                if top_ch != expected_open:
+                    issues.append(self._issue(fp, line_num, self.ERROR, 'E011',
+                        f"Mismatched '{ch}', expected closing for '{top_ch}' "
+                        f"opened at line {top_line}"))
+                    stack.pop()
+                else:
+                    stack.pop()
+
+        for ch, ln in stack:
+            close_ch = pairs[ch]
+            issues.append(self._issue(fp, ln, self.ERROR, 'E010',
+                f"Unclosed '{ch}' — missing '{close_ch}'"))
+
+        # 요약 경고
+        opens = cleaned.count('{')
+        closes = cleaned.count('}')
+        if opens != closes:
+            issues.append(self._issue(fp, 1, self.WARNING, 'W020',
+                f"Brace count mismatch: {{ = {opens}, }} = {closes} (diff = {opens - closes})"))
+
+        return issues
+
+    def _check_namespace_class_structure(self, fp, content, ext):
+        """C#/Java 파일의 namespace/class 구조 검증"""
+        issues = []
+        if ext not in ('.cs', '.java'):
+            return issues
+
+        lines = content.split('\n')
+        # namespace가 있는데 class가 namespace 밖에 있는지 체크
+        namespace_depth = 0
+        brace_depth = 0
+        in_namespace = False
+        cleaned = self._strip_strings_and_comments(content)
+        cleaned_lines = cleaned.split('\n')
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if i <= len(cleaned_lines):
+                clean_line = cleaned_lines[i - 1]
+            else:
+                clean_line = stripped
+
+            # namespace 키워드 감지 (C#)
+            if ext == '.cs' and re.match(r'^\s*namespace\s+', stripped):
+                if brace_depth > 0 and not in_namespace:
+                    issues.append(self._issue(fp, i, self.WARNING, 'W020',
+                        "namespace declared inside another block — possible brace error"))
+
+            # 중괄호 깊이 추적
+            for ch in clean_line:
+                if ch == '{':
+                    brace_depth += 1
+                elif ch == '}':
+                    brace_depth -= 1
+                    if brace_depth < 0:
+                        issues.append(self._issue(fp, i, self.ERROR, 'E010',
+                            f"Brace depth went negative at line {i} — extra closing brace"))
+                        brace_depth = 0
+
+        if brace_depth != 0:
+            issues.append(self._issue(fp, len(lines), self.ERROR, 'E010',
+                f"File ends with brace depth {brace_depth} — "
+                f"{'missing closing' if brace_depth > 0 else 'extra closing'} braces"))
+
+        return issues
+
+        # Check unused imports (simple heuristic: search name in rest of content)
+        lines = content.split('\n')
+        for name, orig, ln in imports:
+            # Skip if it's a module used in dotted access
+            if name == orig:
+                pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            else:
+                pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+
+            used = False
+            for i, line in enumerate(lines, 1):
+                if i == ln:
+                    continue  # skip the import line itself
+                if pattern.search(line):
+                    used = True
+                    break
+
+            if not used:
+                issues.append(self._issue(fp, ln, self.WARNING, 'W001',
+                    f'Unused import: {name}'))
+
+        return issues
+
+    def _check_python_style(self, fp, content):
+        """Check Python-specific style issues."""
+        issues = []
+        try:
+            tree = ast.parse(content, filename=fp)
+        except SyntaxError:
+            return issues
+
+        for node in ast.walk(tree):
+            # Bare except
+            if isinstance(node, ast.ExceptHandler):
+                if node.type is None:
+                    issues.append(self._issue(fp, node.lineno, self.WARNING,
+                        'W009', 'Bare except clause (catches all exceptions including SystemExit, KeyboardInterrupt)'))
+                # Empty except body
+                if (len(node.body) == 1 and isinstance(node.body[0], ast.Pass)):
+                    issues.append(self._issue(fp, node.lineno, self.INFO,
+                        'I002', 'Empty except block (pass only)'))
+
+            # Mutable default argument
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for default in node.args.defaults + node.args.kw_defaults:
+                    if default is None:
+                        continue
+                    if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                        issues.append(self._issue(fp, node.lineno, self.WARNING,
+                            'W010', f'Mutable default argument in {node.name}()'))
+                        break
+
+                # Redefined builtins
+                if node.name in self.PYTHON_BUILTINS:
+                    issues.append(self._issue(fp, node.lineno, self.WARNING,
+                        'W011', f'Function name "{node.name}" shadows a built-in'))
+
+        return issues
+
+    def _check_python_patterns(self, fp, content):
+        """Check for debug statements and other patterns."""
+        issues = []
+        lines = content.split('\n')
+
+        for i, line in enumerate(lines, 1):
+            # Debug patterns
+            for pat in self.DEBUG_PATTERNS:
+                if pat.search(line):
+                    issues.append(self._issue(fp, i, self.WARNING, 'W008',
+                        f'Debug statement: {line.strip()[:60]}'))
+                    break
+
+        return issues
+
+    # ── JavaScript/TypeScript checks ──
+
+    def _check_js_patterns(self, fp, content):
+        """Basic JS/TS checks."""
+        issues = []
+        lines = content.split('\n')
+
+        console_re = re.compile(r'^\s*console\.(log|debug|warn|error|info)\s*\(')
+        debugger_re = re.compile(r'^\s*debugger\s*;?\s*$')
+        alert_re = re.compile(r'^\s*alert\s*\(')
+
+        for i, line in enumerate(lines, 1):
+            if console_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'W008',
+                    f'console.log left in code: {line.strip()[:60]}'))
+            if debugger_re.match(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'W008',
+                    'debugger statement'))
+            if alert_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'W008',
+                    'alert() call'))
+
+        return issues
+
+    # ── C# checks ──
+
+    def _check_csharp(self, fp, content):
+        """Check C# code for common issues."""
+        issues = []
+        lines = content.split('\n')
+        in_comment_block = False
+
+        # Pattern definitions
+        import re
+        empty_catch_re = re.compile(r'^\s*catch\s*\(.*\)\s*\{?\s*$')
+        catch_all_re = re.compile(r'^\s*catch\s*\{')
+        catch_exception_re = re.compile(r'^\s*catch\s*\(\s*Exception\s+')
+        console_re = re.compile(r'^\s*Console\.(Write|WriteLine)\s*\(')
+        debug_re = re.compile(r'^\s*(Debug|Trace)\.(Write|WriteLine|Log|Assert)\s*\(')
+        goto_re = re.compile(r'^\s*goto\s+\w+')
+        region_re = re.compile(r'^\s*#region\b')
+        todo_re = re.compile(r'//\s*(TODO|FIXME|HACK|XXX)\b', re.IGNORECASE)
+        throw_ex_re = re.compile(r'^\s*throw\s+ex\s*;')
+        public_field_re = re.compile(r'^\s*public\s+(?!class|interface|enum|struct|void|override|static|virtual|abstract|async|partial|readonly)\w+\s+\w+\s*[;=]')
+        magic_num_re = re.compile(r'[=<>!]+\s*\d{3,}')
+        string_concat_loop = re.compile(r'\+=\s*["\'"]')
+        dispose_re = re.compile(r'\bnew\s+(?:SqlConnection|FileStream|StreamReader|StreamWriter|HttpClient|WebClient)\b')
+        using_re = re.compile(r'^\s*using\s*\(')
+        empty_string_re = re.compile(r'==\s*""|\.Equals\s*\(\s*""\s*\)')
+        async_void_re = re.compile(r'^\s*(?:public|private|protected|internal)\s+async\s+void\s+')
+        event_pattern_re = re.compile(r'async\s+void\s+\w+.*EventArgs')
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+
+            # Track block comments
+            if '/*' in stripped:
+                in_comment_block = True
+            if '*/' in stripped:
+                in_comment_block = False
+                continue
+            if in_comment_block or stripped.startswith('//'):
+                continue
+
+            # Empty/general catch
+            if catch_all_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'CS001',
+                    'Bare catch block — catches all exceptions silently'))
+            elif catch_exception_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'CS002',
+                    'Catching generic Exception — consider specific exception types'))
+
+            # throw ex instead of throw
+            if throw_ex_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'CS003',
+                    '"throw ex" resets stack trace — use "throw" instead'))
+
+            # Console.Write in non-console apps
+            if console_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'CS004',
+                    'Console.Write/WriteLine — use proper logging in production'))
+
+            # Debug/Trace statements
+            if debug_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'CS005',
+                    'Debug/Trace statement — remove before release'))
+
+            # goto statement
+            if goto_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'CS006',
+                    'goto statement — consider refactoring'))
+
+            # Public fields (should be properties)
+            if public_field_re.search(line) and '{' not in line:
+                issues.append(self._issue(fp, i, self.INFO, 'CS007',
+                    'Public field — consider using a property instead'))
+
+            # Magic numbers
+            if magic_num_re.search(line) and 'const' not in line and '//' not in line.split('=')[0]:
+                issues.append(self._issue(fp, i, self.INFO, 'CS008',
+                    'Magic number — consider defining a named constant'))
+
+            # String concatenation (potential StringBuilder candidate)
+            if string_concat_loop.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'CS009',
+                    'String concatenation with += — consider StringBuilder in loops'))
+
+            # IDisposable without using
+            if dispose_re.search(line) and not using_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'CS010',
+                    'IDisposable created without using statement — may cause resource leak'))
+
+            # string == "" instead of string.IsNullOrEmpty
+            if empty_string_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'CS011',
+                    'Comparing with "" — consider string.IsNullOrEmpty() or string.IsNullOrWhiteSpace()'))
+
+            # async void (except event handlers)
+            if async_void_re.search(line) and not event_pattern_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'CS012',
+                    'async void method — use async Task instead (exceptions cannot be caught)'))
+
+        return issues
+
+    # ── VB.NET checks ──
+
+    def _check_vbnet(self, fp, content):
+        """Check VB.NET code for common issues."""
+        issues = []
+        lines = content.split('\n')
+
+        import re
+        catch_all_re = re.compile(r'^\s*Catch\s*$', re.IGNORECASE)
+        catch_ex_re = re.compile(r'^\s*Catch\s+\w+\s+As\s+Exception\b', re.IGNORECASE)
+        on_error_re = re.compile(r'^\s*On\s+Error\s+(Resume|GoTo)', re.IGNORECASE)
+        console_re = re.compile(r'^\s*Console\.(Write|WriteLine)\s*\(', re.IGNORECASE)
+        debug_re = re.compile(r'^\s*(Debug|Trace)\.(Write|WriteLine|Print)\s*\(', re.IGNORECASE)
+        msgbox_re = re.compile(r'^\s*MsgBox\s*\(', re.IGNORECASE)
+        goto_re = re.compile(r'^\s*GoTo\s+\w+', re.IGNORECASE)
+        option_strict_re = re.compile(r'^\s*Option\s+Strict\s+Off', re.IGNORECASE)
+        late_bind_re = re.compile(r'\bCreateObject\s*\(|\bGetObject\s*\(', re.IGNORECASE)
+        public_field_re = re.compile(r'^\s*Public\s+(?!Class|Interface|Enum|Structure|Sub|Function|Property|Event|Overrides|Shared|MustOverride|Overridable)\w+', re.IGNORECASE)
+        empty_string_re = re.compile(r'=\s*""|<>\s*""', re.IGNORECASE)
+        string_concat_re = re.compile(r'&=\s*"', re.IGNORECASE)
+        dispose_re = re.compile(r'\bNew\s+(?:SqlConnection|FileStream|StreamReader|StreamWriter|HttpClient)\b', re.IGNORECASE)
+        using_re = re.compile(r'^\s*Using\s+', re.IGNORECASE)
+
+        found_option_strict = False
+        found_option_explicit = False
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("'") or stripped == '':
+                continue
+
+            # Option Strict Off
+            if option_strict_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB001',
+                    'Option Strict Off — enables late binding and implicit conversions'))
+                found_option_strict = True
+
+            if 'Option Explicit' in line:
+                found_option_explicit = True
+
+            # On Error Resume Next / GoTo
+            if on_error_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB002',
+                    'On Error Resume/GoTo — use Try/Catch instead'))
+
+            # Bare Catch
+            if catch_all_re.match(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB003',
+                    'Bare Catch — catches all exceptions silently'))
+            elif catch_ex_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB004',
+                    'Catching generic Exception — consider specific exception types'))
+
+            # GoTo
+            if goto_re.search(line) and not on_error_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB005',
+                    'GoTo statement — consider refactoring'))
+
+            # Console/Debug/MsgBox
+            if console_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB006',
+                    'Console.Write — use proper logging in production'))
+            if debug_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB007',
+                    'Debug/Trace statement — remove before release'))
+            if msgbox_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB008',
+                    'MsgBox — use MessageBox.Show or proper UI pattern'))
+
+            # Public fields
+            if public_field_re.search(line) and 'As ' in line and 'Property' not in line:
+                issues.append(self._issue(fp, i, self.INFO, 'VB009',
+                    'Public field — consider using a Property instead'))
+
+            # Late binding
+            if late_bind_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB010',
+                    'Late binding (CreateObject/GetObject) — use early binding for type safety'))
+
+            # String comparison with ""
+            if empty_string_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB011',
+                    'Comparing with "" — consider String.IsNullOrEmpty()'))
+
+            # String concatenation &=
+            if string_concat_re.search(line):
+                issues.append(self._issue(fp, i, self.INFO, 'VB012',
+                    'String concatenation with &= — consider StringBuilder in loops'))
+
+            # IDisposable without Using
+            if dispose_re.search(line) and not using_re.search(line):
+                issues.append(self._issue(fp, i, self.WARNING, 'VB013',
+                    'IDisposable created without Using statement — may cause resource leak'))
+
+        return issues

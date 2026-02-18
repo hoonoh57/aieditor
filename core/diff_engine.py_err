@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-diff_engine.py - Line-number based diff parser and engine for ProjectScan v6.0
+diff_engine.py — Line-number based diff parser and engine for ProjectScan v6.0
 Supports: REPLACE, DELETE, INSERT, CREATE FILE, DELETE FILE
 With brace-balance validation for C#, VB, Java, etc.
 """
@@ -10,122 +10,31 @@ import os
 import re
 import shutil
 from .encoding_handler import EncodingHandler, TextNormalizer
+import re
+import shutil
+from .encoding_handler import EncodingHandler, TextNormalizer
 
-
-# ============================================================
-#  Brace Balance Utilities
-# ============================================================
-
-BRACE_LANGUAGES = {
-    '.cs', '.vb', '.java', '.js', '.ts', '.jsx', '.tsx',
-    '.go', '.rs', '.swift', '.kt', '.cpp', '.c', '.h', '.hpp',
-}
-
-
-def strip_strings_and_comments(text):
-    """Remove string literals and comments for accurate brace counting."""
-    result = []
-    i = 0
-    in_string = None
-    in_line_comment = False
-    in_block_comment = False
-    length = len(text)
-    while i < length:
-        c = text[i]
-        if in_block_comment:
-            if c == '*' and i + 1 < length and text[i + 1] == '/':
-                in_block_comment = False
-                i += 2
-                continue
-            if c == '\n':
-                result.append(c)
-            i += 1
-            continue
-        if in_line_comment:
-            if c == '\n':
-                in_line_comment = False
-                result.append(c)
-            i += 1
-            continue
-        if in_string:
-            if c == '\\':
-                i += 2
-                continue
-            if c == in_string:
-                in_string = None
-            i += 1
-            continue
-        if c == '/' and i + 1 < length:
-            if text[i + 1] == '*':
-                in_block_comment = True
-                i += 2
-                continue
-            if text[i + 1] == '/':
-                in_line_comment = True
-                i += 2
-                continue
-        if c in ('"', "'"):
-            in_string = c
-            i += 1
-            continue
-        result.append(c)
-        i += 1
-    return ''.join(result)
-
-
-def check_brace_balance(text):
-    """Check {}, (), [] balance. Returns (ok, message)."""
-    cleaned = strip_strings_and_comments(text)
-    pairs = {'{': '}', '(': ')', '[': ']'}
-    close_to_open = {v: k for k, v in pairs.items()}
-    stack = []
-    line_num = 1
-    for ch in cleaned:
-        if ch == '\n':
-            line_num += 1
-            continue
-        if ch in pairs:
-            stack.append((ch, line_num))
-        elif ch in close_to_open:
-            expected_open = close_to_open[ch]
-            if not stack:
-                return False, (
-                    "unexpected '%s' at line ~%d with no matching '%s'"
-                    % (ch, line_num, expected_open))
-            top_ch, top_line = stack[-1]
-            if top_ch != expected_open:
-                return False, (
-                    "mismatched '%s' at line ~%d, "
-                    "expected closing for '%s' opened at line ~%d"
-                    % (ch, line_num, top_ch, top_line))
-            stack.pop()
-    if stack:
-        unclosed = ["'%s' at line ~%d" % (ch, ln) for ch, ln in stack[-5:]]
-        return False, "%d unclosed bracket(s): %s" % (len(stack), ', '.join(unclosed))
-    opens = cleaned.count('{')
-    closes = cleaned.count('}')
-    return True, "braces balanced: %d open, %d close" % (opens, closes)
-
-
-def is_brace_language(filepath):
-    """Return True if file extension is a brace-based language."""
-    ext = os.path.splitext(filepath)[1].lower()
-    return ext in BRACE_LANGUAGES
-
-
-# ============================================================
-#  LineDiffParser
-# ============================================================
 
 class LineDiffParser:
-    # Format examples (in comments to avoid parser confusion):
-    #   == FILE: path/file.js ==
-    #   @@ 15-23 REPLACE / @@ END
-    #   @@ 50 DELETE 3
-    #   @@ 60 INSERT / @@ END
-    #   == END FILE ==
-    #   == CREATE FILE: path == / == END FILE ==
-    #   == DELETE FILE: path ==
+    """
+    AI response format:
+
+    === FILE: path/file.js ===
+    @@ 15-23 REPLACE
+    new code
+    @@ END
+    @@ 50 DELETE 3
+    @@ 60 INSERT
+    insert code
+    @@ END
+    === END FILE ===
+
+    === CREATE FILE: src/utils/helper.py ===
+    file content here
+    === END FILE ===
+
+    === DELETE FILE: old_module.py ===
+    """
 
     RE_FILE_START = re.compile(r'^\s*={2,}\s*FILE:\s*(.+?)\s*={2,}\s*$')
     RE_FILE_END = re.compile(r'^\s*={2,}\s*END\s+FILE\s*={2,}\s*$')
@@ -146,8 +55,10 @@ class LineDiffParser:
         text = TextNormalizer.full(text)
         lines = text.split('\n')
 
+        # Extract file operations (CREATE / DELETE FILE)
         file_ops = self._parse_file_ops(lines)
 
+        # Extract edit blocks
         file_blocks = self._split_files(lines)
         if not file_blocks:
             cmds = self._parse_commands(lines)
@@ -166,9 +77,11 @@ class LineDiffParser:
         return result, file_ops
 
     def _parse_file_ops(self, lines):
+        """Parse CREATE FILE and DELETE FILE operations."""
         ops = []
         i = 0
         while i < len(lines):
+            # === CREATE FILE: path ===
             m = self.RE_CREATE_FILE.match(lines[i])
             if m:
                 fp = m.group(1).strip().strip('`\'"')
@@ -186,12 +99,18 @@ class LineDiffParser:
                     'content': '\n'.join(content_lines),
                 })
                 continue
+
+            # === DELETE FILE: path ===
             m = self.RE_DELETE_FILE.match(lines[i])
             if m:
                 fp = m.group(1).strip().strip('`\'"')
-                ops.append({'op': 'delete', 'path': fp})
+                ops.append({
+                    'op': 'delete',
+                    'path': fp,
+                })
                 i += 1
                 continue
+
             i += 1
         return ops
 
@@ -199,6 +118,7 @@ class LineDiffParser:
         blocks = {}
         headers = []
         for i, line in enumerate(lines):
+            # Skip CREATE FILE and DELETE FILE lines
             if self.RE_CREATE_FILE.match(line) or self.RE_DELETE_FILE.match(line):
                 continue
             m = self.RE_FILE_START.match(line)
@@ -292,51 +212,38 @@ class LineDiffParser:
         return commands
 
 
-# ============================================================
-#  LineDiffEngine
-# ============================================================
-
 class LineDiffEngine:
 
     def __init__(self):
         self.parser = LineDiffParser()
-        self._current_filepath = None
 
     def parse(self, text):
-        return self.parser.parse(text)
+                old_count = e - s
+                file_lines[s:e] = new_lines
+                ok += 1
+                msgs.append(
+                    f"[OK] REPLACE {cmd['start']}-{cmd['end']} "
+                    f"({old_count}lines -> {len(new_lines)}lines)")
 
-    def analyze(self, diff_text, path_map=None):
-        parsed, file_ops = self.parser.parse(diff_text)
-        files = []
-        tc = 0
-        for fp, cmds in parsed.items():
-            found, rp = False, None
-            if path_map and fp != '__current_file__':
-                rp = self._resolve(fp, path_map)
-                found = rp is not None
-            rep_count = sum(1 for c in cmds if c['type'] == 'replace')
-            del_count = sum(1 for c in cmds if c['type'] == 'delete')
-            ins_count = sum(1 for c in cmds if c['type'] == 'insert')
-            files.append({
-                'path': fp, 'change_count': len(cmds),
-                'rep_count': rep_count, 'del_count': del_count,
-                'ins_count': ins_count,
-                'found_in_project': found, 'resolved_path': rp})
-            tc += len(cmds)
-        if not parsed and not file_ops:
-            fmt = 'unrecognized'
-        elif file_ops and not parsed:
-            fmt = 'file_ops_only'
-        elif '__current_file__' in parsed:
-            fmt = 'single_file'
-        elif len(parsed) == 1:
-            fmt = 'single_file_named'
-        else:
-            fmt = 'multi_file'
-        return {'file_count': len(parsed), 'files': files,
-                'total_changes': tc, 'format': fmt,
-                'file_ops': file_ops}
-
+                # ── 중괄호 밸런스 체크 (REPLACE 직후) ──
+                brace_ext = {'.cs', '.vb', '.java', '.js', '.ts', '.jsx', '.tsx',
+                             '.go', '.rs', '.swift', '.kt', '.cpp', '.c', '.h', '.hpp'}
+                if hasattr(self, '_current_filepath'):
+                    fext = os.path.splitext(self._current_filepath)[1].lower()
+                    if fext in brace_ext:
+                        full_text = '\n'.join(file_lines)
+                        brace_ok, brace_msg = self._check_brace_balance(full_text)
+                        if not brace_ok:
+                            msgs.append(
+                                f"[BLOCK] REPLACE {cmd['start']}-{cmd['end']}: "
+                                f"brace imbalance after apply — {brace_msg}")
+                            # 롤백: 원래 줄 복원
+                            file_lines[s:s + len(new_lines)] = original.split('\n')[s:e]
+                            ok -= 1
+                            errors += 1
+                            msgs.append(
+                                f"[ROLLBACK] REPLACE {cmd['start']}-{cmd['end']} "
+                                f"reverted due to brace imbalance")
     def apply_to_content(self, original, commands):
         if not commands:
             return original, ["[!] no changes"]
@@ -345,10 +252,6 @@ class LineDiffEngine:
         msgs = []
         ok = 0
         errors = 0
-
-        do_brace = (self._current_filepath is not None
-                    and is_brace_language(self._current_filepath))
-
         sorted_cmds = sorted(
             commands,
             key=lambda c: c.get('start', c.get('after', 0)),
@@ -364,61 +267,59 @@ class LineDiffEngine:
                     e = len(file_lines)
                 if s > len(file_lines):
                     msgs.append(
-                        "[X] REPLACE %d-%d: start(%d) > file length(%d)"
-                        % (cmd['start'], cmd['end'], cmd['start'], len(file_lines)))
+                        f"[X] REPLACE {cmd['start']}-{cmd['end']}: "
+                        f"start({cmd['start']}) > file length({len(file_lines)})")
                     errors += 1
                     continue
                 new_lines = cmd['content'].split('\n')
                 is_full = (cmd['start'] <= 1 and cmd['end'] >= orig_count)
                 if is_full and orig_count > 10 and len(new_lines) < orig_count * 0.1:
                     msgs.append(
-                        "[BLOCK] REPLACE %d-%d: full replace would reduce %d -> %d lines"
-                        % (cmd['start'], cmd['end'], orig_count, len(new_lines)))
+                        f"[BLOCK] REPLACE {cmd['start']}-{cmd['end']}: "
+                        f"full replace would reduce {orig_count} -> {len(new_lines)} lines")
                     errors += 1
                     continue
                 old_count = e - s
-                saved_old = file_lines[s:e]
                 file_lines[s:e] = new_lines
-
-                # Brace balance check after this REPLACE
-                if do_brace:
-                    brace_ok, brace_msg = check_brace_balance('\n'.join(file_lines))
-                    if not brace_ok:
-                        # Rollback
-                        file_lines[s:s + len(new_lines)] = saved_old
-                        msgs.append(
-                            "[BLOCK] REPLACE %d-%d: brace imbalance - %s"
-                            % (cmd['start'], cmd['end'], brace_msg))
-                        msgs.append(
-                            "[ROLLBACK] REPLACE %d-%d reverted due to brace imbalance"
-                            % (cmd['start'], cmd['end']))
-                        errors += 1
-                        continue
-
                 ok += 1
                 msgs.append(
-                    "[OK] REPLACE %d-%d (%dlines -> %dlines)"
-                    % (cmd['start'], cmd['end'], old_count, len(new_lines)))
+                    f"[OK] REPLACE {cmd['start']}-{cmd['end']} "
+        result = '\n'.join(file_lines)
+        orig_len = len(original.strip())
+        result_len = len(result.strip())
+        if orig_len > 200 and result_len < orig_len * 0.1:
+            pct = result_len * 100 // orig_len if orig_len > 0 else 0
+            msgs.append(f"[BLOCK] result is only {pct}% of original -> keeping original")
+            return original, msgs
 
-            elif ctype == 'delete':
-                s = cmd['start'] - 1
-                count = cmd['count']
-                if s < 0:
-                    s = 0
+        # ── 최종 중괄호 밸런스 체크 ──
+        brace_ext = {'.cs', '.vb', '.java', '.js', '.ts', '.jsx', '.tsx',
+                     '.go', '.rs', '.swift', '.kt', '.cpp', '.c', '.h', '.hpp'}
+        if hasattr(self, '_current_filepath'):
+            fext = os.path.splitext(self._current_filepath)[1].lower()
+            if fext in brace_ext:
+                brace_ok, brace_msg = self._check_brace_balance(result)
+                if not brace_ok:
+                    msgs.append(f"[BLOCK] FINAL brace check failed: {brace_msg}")
+                    msgs.append("[BLOCK] entire patch rejected — keeping original file")
+                    return original, msgs
+                else:
+                    msgs.append(f"[BRACE OK] {brace_msg}")
+
+        return result, msgs
                 if s >= len(file_lines):
                     msgs.append(
-                        "[X] DELETE %d: start(%d) > file length(%d)"
-                        % (cmd['start'], cmd['start'], len(file_lines)))
-                    errors += 1
-                    continue
-                e = min(s + count, len(file_lines))
+                        f"[X] DELETE {cmd['start']}: "
+                        f"start({cmd['start']}) > file length({len(file_lines)})")
+    def resolve_and_apply_all(self, diff_text, path_map, project_path=None):
+        parsed, file_ops = self.parser.parse(diff_text)
+        results = []
                 actual = e - s
                 del file_lines[s:e]
                 ok += 1
                 msgs.append(
-                    "[OK] DELETE %d x%d (%dlines removed)"
-                    % (cmd['start'], count, actual))
-
+                    f"[OK] DELETE {cmd['start']} x{count} "
+                    f"({actual}lines removed)")
             elif ctype == 'insert':
                 pos = cmd['after']
                 if pos < 0:
@@ -429,29 +330,16 @@ class LineDiffEngine:
                 file_lines[pos:pos] = new_lines
                 ok += 1
                 msgs.append(
-                    "[OK] INSERT after %d (%dlines added)"
-                    % (cmd['after'], len(new_lines)))
-
-        msgs.insert(0, "Result: %d ok, %d errors / %d total" % (ok, errors, len(commands)))
-
+                    f"[OK] INSERT after {cmd['after']} "
+                    f"({len(new_lines)}lines added)")
+        msgs.insert(0, f"Result: {ok} ok, {errors} errors / {len(commands)} total")
         result = '\n'.join(file_lines)
         orig_len = len(original.strip())
         result_len = len(result.strip())
         if orig_len > 200 and result_len < orig_len * 0.1:
             pct = result_len * 100 // orig_len if orig_len > 0 else 0
-            msgs.append("[BLOCK] result is only %d%% of original -> keeping original" % pct)
+            msgs.append(f"[BLOCK] result is only {pct}% of original -> keeping original")
             return original, msgs
-
-        # Final brace balance check on complete result
-        if do_brace:
-            brace_ok, brace_msg = check_brace_balance(result)
-            if not brace_ok:
-                msgs.append("[BLOCK] FINAL brace check failed: " + brace_msg)
-                msgs.append("[BLOCK] entire patch rejected - keeping original file")
-                return original, msgs
-            else:
-                msgs.append("[BRACE OK] " + brace_msg)
-
         return result, msgs
 
     def resolve_and_apply_all(self, diff_text, path_map, project_path=None):
@@ -468,26 +356,18 @@ class LineDiffEngine:
                     full_path = fp
                 try:
                     os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                    # Backup existing file before overwrite
-                    if os.path.isfile(full_path):
-                        bp = full_path + '.bak'
-                        n = 1
-                        while os.path.exists(bp):
-                            bp = full_path + '.bak' + str(n)
-                            n += 1
-                        shutil.copy2(full_path, bp)
                     with open(full_path, 'w', encoding='utf-8') as f:
                         f.write(fop['content'])
                     results.append({
                         'filepath': fp, 'resolved_path': full_path,
                         'success': True, 'new_content': fop['content'],
-                        'messages': ["[CREATED] " + fp],
+                        'messages': [f"[CREATED] {fp}"],
                         'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
                 except Exception as e:
                     results.append({
                         'filepath': fp, 'resolved_path': full_path,
                         'success': False, 'new_content': None,
-                        'messages': ["[X] create error: " + str(e)],
+                        'messages': [f"[X] create error: {e}"],
                         'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
 
             elif fop['op'] == 'delete':
@@ -497,43 +377,44 @@ class LineDiffEngine:
                     cand = os.path.join(project_path, fp.replace('/', os.sep))
                     if os.path.exists(cand):
                         rp = cand
-                if rp and os.path.exists(rp):
-                    try:
-                        if os.path.isdir(rp):
-                            bp = rp + '_deleted_bak'
-                            if os.path.exists(bp):
-                                shutil.rmtree(bp)
-                            shutil.copytree(rp, bp)
-                            shutil.rmtree(rp)
-                            results.append({
-                                'filepath': fp, 'resolved_path': rp,
-                                'success': True, 'new_content': None,
-                                'messages': [
-                                    "[DELETED FOLDER] " + fp,
-                                    "[BACKUP] " + os.path.basename(bp)],
-                                'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
-                        else:
-                            bp = rp + '.deleted_bak'
+            try:
+                content, enc, bom, le = EncodingHandler.read_file(rp)
+            except Exception as e:
+                results.append({
+                    'filepath': fp, 'resolved_path': rp,
+                    'success': False, 'new_content': None,
+                    'messages': [f"[X] read error: {e}"],
+                    'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
+                continue
+
+            # 파일 확장자를 엔진에 전달 (중괄호 체크용)
+            self._current_filepath = rp
+
+            new_c, msgs = self.apply_to_content(content, cmds)
+            any_ok = any('[OK]' in m for m in msgs)
+            changed = new_c != content
+
+            # _current_filepath 초기화
+            self._current_filepath = None
                             shutil.copy2(rp, bp)
                             os.remove(rp)
                             results.append({
                                 'filepath': fp, 'resolved_path': rp,
                                 'success': True, 'new_content': None,
-                                'messages': [
-                                    "[DELETED] " + fp,
-                                    "[BACKUP] " + os.path.basename(bp)],
+                                'messages': [f"[DELETED] {fp}", f"[BACKUP] {os.path.basename(bp)}"],
                                 'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
+
                     except Exception as e:
                         results.append({
                             'filepath': fp, 'resolved_path': rp,
-                            'success': False, 'new_content': None,
-                            'messages': ["[X] delete error: " + str(e)],
-                            'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
-                else:
-                    results.append({
+    def apply_and_save(self, diff_text, path_map, project_path=None):
+        results = self.resolve_and_apply_all(diff_text, path_map, project_path)
+        saved, failed, skipped, created, deleted = 0, 0, 0, 0, 0
+        brace_blocked = 0
+        for r in results:
                         'filepath': fp, 'resolved_path': None,
                         'success': False, 'new_content': None,
-                        'messages': ["[X] not found for delete: " + fp],
+                        'messages': [f"[X] not found for delete: {fp}"],
                         'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
 
         # Process edit commands
@@ -554,7 +435,7 @@ class LineDiffEngine:
                 results.append({
                     'filepath': fp, 'resolved_path': None,
                     'success': False, 'new_content': None,
-                    'messages': ["[X] not found: " + fp],
+                    'messages': [f"[X] not found: {fp}"],
                     'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
                 continue
             try:
@@ -563,43 +444,51 @@ class LineDiffEngine:
                 results.append({
                     'filepath': fp, 'resolved_path': rp,
                     'success': False, 'new_content': None,
-                    'messages': ["[X] read error: " + str(e)],
+                    'messages': [f"[X] read error: {e}"],
                     'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
-                continue
+            try:
+                bp = r['resolved_path'] + '.bak'
+                n = 1
+                while os.path.exists(bp):
+                    bp = f"{r['resolved_path']}.bak{n}"
+                    n += 1
+                shutil.copy2(r['resolved_path'], bp)
 
-            # Set filepath for brace checking
-            self._current_filepath = rp
-            new_c, msgs = self.apply_to_content(content, cmds)
-            self._current_filepath = None
+                # 저장 전 최종 중괄호 검증 (이중 안전장치)
+                brace_ext = {'.cs', '.vb', '.java', '.js', '.ts', '.jsx', '.tsx',
+                             '.go', '.rs', '.swift', '.kt', '.cpp', '.c', '.h', '.hpp'}
+                fext = os.path.splitext(r['resolved_path'])[1].lower()
+                if fext in brace_ext:
+                    brace_ok, brace_msg = self._check_brace_balance(r['new_content'])
+                    if not brace_ok:
+                        r['messages'].append(f"[BLOCK] pre-save brace check FAILED: {brace_msg}")
+                        r['messages'].append("[BLOCK] file NOT saved — brace imbalance detected")
+                        r['success'] = False
+                        brace_blocked += 1
+                        failed += 1
+                        continue
 
-            any_ok = any('[OK]' in m for m in msgs)
-            changed = new_c != content
-            results.append({
-                'filepath': fp, 'resolved_path': rp,
-                'success': any_ok and changed,
-                'new_content': new_c if changed else None,
-                'messages': msgs, 'encoding': enc,
-                'has_bom': bom, 'line_ending': le})
-        return results
-
-    def apply_and_save(self, diff_text, path_map, project_path=None):
-        results = self.resolve_and_apply_all(diff_text, path_map, project_path)
-        saved, failed, skipped, created, deleted = 0, 0, 0, 0, 0
-        brace_blocked = 0
+                EncodingHandler.write_file(
+                    r['resolved_path'], r['new_content'],
+                    r['encoding'], r['has_bom'], r['line_ending'])
+                r['messages'].append(f"[SAVED] backup: {os.path.basename(bp)}")
+                saved += 1
         for r in results:
+            # Count created/deleted files
             if any('[CREATED]' in m for m in r['messages']):
                 if r['success']:
                     created += 1
+                    # Syntax check for created .py files
                     if r.get('resolved_path', '').endswith('.py'):
                         try:
                             import py_compile
                             py_compile.compile(r['resolved_path'], doraise=True)
                             r['messages'].append("[SYNTAX OK]")
                         except py_compile.PyCompileError as pe:
-                            r['messages'].append("[SYNTAX ERROR] " + str(pe))
-                            r['syntax_error'] = True
-                else:
-                    failed += 1
+        return results, {'total': len(results), 'saved': saved,
+                         'failed': failed, 'skipped': skipped,
+                         'created': created, 'deleted': deleted,
+                         'brace_blocked': brace_blocked}
                 continue
             if any("[DELETED" in m for m in r["messages"]):
                 if r['success']:
@@ -608,6 +497,7 @@ class LineDiffEngine:
                     failed += 1
                 continue
 
+            # Normal edit operations
             if not r['success'] or r['new_content'] is None:
                 if r['resolved_path']:
                     failed += 1
@@ -618,26 +508,120 @@ class LineDiffEngine:
                 bp = r['resolved_path'] + '.bak'
                 n = 1
                 while os.path.exists(bp):
-                    bp = r['resolved_path'] + '.bak' + str(n)
+                    bp = f"{r['resolved_path']}.bak{n}"
                     n += 1
                 shutil.copy2(r['resolved_path'], bp)
-
-                # Pre-save brace check (final safety net)
-                fext = os.path.splitext(r['resolved_path'])[1].lower()
-                if fext in BRACE_LANGUAGES:
-                    brace_ok, brace_msg = check_brace_balance(r['new_content'])
-                    if not brace_ok:
-                        r['messages'].append("[BLOCK] pre-save brace check FAILED: " + brace_msg)
-                        r['messages'].append("[BLOCK] file NOT saved - brace imbalance detected")
-                        r['success'] = False
-                        brace_blocked += 1
-                        failed += 1
-                        continue
-
                 EncodingHandler.write_file(
-                    r['resolved_path'], r['new_content'],
-                    r['encoding'], r['has_bom'], r['line_ending'])
-                r['messages'].append("[SAVED] backup: " + os.path.basename(bp))
+        return None
+
+    @staticmethod
+    def _strip_strings_and_comments(text):
+        """문자열 리터럴과 주석을 제거하여 중괄호 카운팅 정확도 향상"""
+        result = []
+        i = 0
+        in_string = None
+        in_line_comment = False
+        in_block_comment = False
+
+        while i < len(text):
+            c = text[i]
+
+            # 블록 주석 종료
+            if in_block_comment:
+                if c == '*' and i + 1 < len(text) and text[i + 1] == '/':
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+
+            # 라인 주석 종료
+            if in_line_comment:
+                if c == '\n':
+                    in_line_comment = False
+                    result.append(c)
+                i += 1
+                continue
+
+            # 문자열 내부
+            if in_string:
+                if c == '\\':
+                    i += 2  # 이스케이프 문자 건너뛰기
+                    continue
+                if c == in_string:
+                    in_string = None
+                i += 1
+                continue
+
+            # 블록 주석 시작
+            if c == '/' and i + 1 < len(text):
+                if text[i + 1] == '*':
+                    in_block_comment = True
+                    i += 2
+                    continue
+                if text[i + 1] == '/':
+                    in_line_comment = True
+                    i += 2
+                    continue
+
+            # 문자열 시작
+            if c in ('"', "'"):
+                # C# verbatim string @"..." 처리
+                if c == '"' and i > 0 and text[i - 1] == '@':
+                    pass  # 간단 처리: 일반 문자열과 동일 취급
+                in_string = c
+                i += 1
+                continue
+
+            result.append(c)
+            i += 1
+
+        return ''.join(result)
+
+    @staticmethod
+    def _check_brace_balance(text):
+        """
+        중괄호/소괄호/대괄호 밸런스를 검사합니다.
+        문자열과 주석을 제거한 후 카운트합니다.
+        Returns: (ok: bool, message: str)
+        """
+        cleaned = LineDiffEngine._strip_strings_and_comments(text)
+
+        pairs = {'{': '}', '(': ')', '[': ']'}
+        close_to_open = {v: k for k, v in pairs.items()}
+        stack = []
+        line_num = 1
+        first_error_line = None
+
+        for ch in cleaned:
+            if ch == '\n':
+                line_num += 1
+                continue
+            if ch in pairs:
+                stack.append((ch, line_num))
+            elif ch in close_to_open:
+                expected_open = close_to_open[ch]
+                if not stack:
+                    return False, f"unexpected '{ch}' at line ~{line_num} with no matching '{expected_open}'"
+                top_ch, top_line = stack[-1]
+                if top_ch != expected_open:
+                    return False, (f"mismatched '{ch}' at line ~{line_num}, "
+                                   f"expected closing for '{top_ch}' opened at line ~{top_line}")
+                stack.pop()
+
+        if stack:
+            unclosed = []
+            for ch, ln in stack:
+                unclosed.append(f"'{ch}' at line ~{ln}")
+            detail = ', '.join(unclosed[-5:])  # 마지막 5개만 표시
+            total = len(stack)
+            return False, f"{total} unclosed bracket(s): {detail}"
+
+        # 중괄호 카운트 요약
+        opens = cleaned.count('{')
+        closes = cleaned.count('}')
+        return True, f"braces balanced: {opens} open, {closes} close"
+                r['messages'].append(f"[SAVED] backup: {os.path.basename(bp)}")
                 saved += 1
                 if r['resolved_path'].endswith('.py'):
                     try:
@@ -645,17 +629,15 @@ class LineDiffEngine:
                         py_compile.compile(r['resolved_path'], doraise=True)
                         r['messages'].append("[SYNTAX OK]")
                     except py_compile.PyCompileError as pe:
-                        r['messages'].append("[SYNTAX ERROR] " + str(pe))
+                        r['messages'].append(f"[SYNTAX ERROR] {pe}")
                         r['syntax_error'] = True
             except Exception as e:
-                r['messages'].append("[X] save error: " + str(e))
+                r['messages'].append(f"[X] save error: {e}")
                 r['success'] = False
                 failed += 1
-        return results, {
-            'total': len(results), 'saved': saved,
-            'failed': failed, 'skipped': skipped,
-            'created': created, 'deleted': deleted,
-            'brace_blocked': brace_blocked}
+        return results, {'total': len(results), 'saved': saved,
+                         'failed': failed, 'skipped': skipped,
+                         'created': created, 'deleted': deleted}
 
     def _resolve(self, fp, pm):
         if not fp or not pm:
