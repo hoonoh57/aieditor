@@ -2,3 +2,5 @@
 *.bak*
 __pycache__/
 .vs/
+*_bak*
+*_err
