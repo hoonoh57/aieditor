@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-diff_engine.py - Line-number based diff parser and engine for ProjectScan v6.0
+diff_engine.py - Line-number based diff parser and engine for ProjectScan v6.1
 Supports: REPLACE, DELETE, INSERT, CREATE FILE, DELETE FILE
 With brace-balance validation for C#, VB, Java, etc.
+
+v6.1 fixes:
+  - C# verbatim string (@"...") support
+  - C# interpolated string ($"...", $@"...") brace exclusion
+  - Proper char literal ('x') handling separate from strings
+  - Multi-language comment styles (C#, Java, Go, Rust, etc.)
 """
 
 import os
@@ -23,15 +29,29 @@ BRACE_LANGUAGES = {
 
 
 def strip_strings_and_comments(text):
-    """Remove string literals and comments for accurate brace counting."""
+    """
+    Remove string literals and comments for accurate brace counting.
+
+    Handles:
+      - C/C++/Java/C#/JS single-line (//) and block comments (/* */)
+      - Double-quoted strings with backslash escapes ("...")
+      - Single-quoted char literals ('x') - treated as 1-3 char tokens
+      - C# verbatim strings (@"..." where "" is escape, not \\)
+      - C# interpolated strings ($"...{expr}..." - braces inside are KEPT)
+      - C# verbatim interpolated ($@"..." or @$"...")
+      - Template literals (`...`) for JS/TS
+    """
     result = []
     i = 0
-    in_string = None
-    in_line_comment = False
-    in_block_comment = False
     length = len(text)
+
+    in_block_comment = False
+    in_line_comment = False
+
     while i < length:
         c = text[i]
+
+        # === Inside block comment ===
         if in_block_comment:
             if c == '*' and i + 1 < length and text[i + 1] == '/':
                 in_block_comment = False
@@ -41,20 +61,16 @@ def strip_strings_and_comments(text):
                 result.append(c)
             i += 1
             continue
+
+        # === Inside line comment ===
         if in_line_comment:
             if c == '\n':
                 in_line_comment = False
                 result.append(c)
             i += 1
             continue
-        if in_string:
-            if c == '\\':
-                i += 2
-                continue
-            if c == in_string:
-                in_string = None
-            i += 1
-            continue
+
+        # === Check for comment start ===
         if c == '/' and i + 1 < length:
             if text[i + 1] == '*':
                 in_block_comment = True
@@ -64,12 +80,168 @@ def strip_strings_and_comments(text):
                 in_line_comment = True
                 i += 2
                 continue
-        if c in ('"', "'"):
-            in_string = c
+
+        # === C# verbatim / interpolated string detection ===
+        if c in ('@', '$') and i + 1 < length:
+            is_verbatim = False
+            is_interpolated = False
+            quote_start = -1
+
+            if c == '@' and text[i + 1] == '"':
+                is_verbatim = True
+                quote_start = i + 2
+            elif c == '$' and text[i + 1] == '"':
+                is_interpolated = True
+                quote_start = i + 2
+            elif c == '$' and i + 2 < length and text[i + 1] == '@' and text[i + 2] == '"':
+                is_verbatim = True
+                is_interpolated = True
+                quote_start = i + 3
+            elif c == '@' and i + 2 < length and text[i + 1] == '$' and text[i + 2] == '"':
+                is_verbatim = True
+                is_interpolated = True
+                quote_start = i + 3
+
+            if is_verbatim or is_interpolated:
+                i = quote_start
+                interp_depth = 0
+                while i < length:
+                    sc = text[i]
+                    if is_verbatim:
+                        if sc == '"':
+                            if i + 1 < length and text[i + 1] == '"':
+                                i += 2
+                                continue
+                            else:
+                                i += 1
+                                break
+                    else:
+                        if sc == '\\':
+                            i += 2
+                            continue
+                        if sc == '"' and interp_depth == 0:
+                            i += 1
+                            break
+
+                    if is_interpolated:
+                        if sc == '{':
+                            if i + 1 < length and text[i + 1] == '{':
+                                i += 2
+                                continue
+                            else:
+                                interp_depth += 1
+                                result.append(sc)
+                                i += 1
+                                continue
+                        if sc == '}':
+                            if i + 1 < length and text[i + 1] == '}':
+                                i += 2
+                                continue
+                            else:
+                                interp_depth -= 1
+                                result.append(sc)
+                                i += 1
+                                continue
+                        # Inside interpolated expression: keep all code characters
+                        if interp_depth > 0:
+                            # Handle nested strings inside expressions
+                            if sc == '"':
+                                i += 1
+                                while i < length:
+                                    nc = text[i]
+                                    if nc == '\\':
+                                        i += 2
+                                        continue
+                                    if nc == '"':
+                                        i += 1
+                                        break
+                                    i += 1
+                                continue
+                            result.append(sc)
+                            i += 1
+                            continue
+
+                    if sc == '\n':
+                        result.append(sc)
+                    i += 1
+
+                continue
+
+        # === Regular double-quoted string ===
+        if c == '"':
             i += 1
+            while i < length:
+                sc = text[i]
+                if sc == '\\':
+                    i += 2
+                    continue
+                if sc == '"':
+                    i += 1
+                    break
+                if sc == '\n':
+                    result.append(sc)
+                i += 1
             continue
+
+        # === Char literal (single quote) ===
+        if c == "'":
+            found_close = False
+            scan = i + 1
+            limit = min(i + 6, length)
+            while scan < limit:
+                if text[scan] == '\\':
+                    scan += 2
+                    continue
+                if text[scan] == "'":
+                    found_close = True
+                    i = scan + 1
+                    break
+                if text[scan] == '\n':
+                    break
+                scan += 1
+            if found_close:
+                continue
+            else:
+                result.append(c)
+                i += 1
+                continue
+
+        # === JS/TS template literal ===
+        if c == '`':
+            i += 1
+            while i < length:
+                sc = text[i]
+                if sc == '\\':
+                    i += 2
+                    continue
+                if sc == '`':
+                    i += 1
+                    break
+                if sc == '$' and i + 1 < length and text[i + 1] == '{':
+                    result.append('{')
+                    i += 2
+                    depth = 1
+                    while i < length and depth > 0:
+                        tc = text[i]
+                        if tc == '{':
+                            depth += 1
+                            result.append(tc)
+                        elif tc == '}':
+                            depth -= 1
+                            result.append(tc)
+                        elif tc == '\n':
+                            result.append(tc)
+                        i += 1
+                    continue
+                if sc == '\n':
+                    result.append(sc)
+                i += 1
+            continue
+
+        # === Normal character - keep it ===
         result.append(c)
         i += 1
+
     return ''.join(result)
 
 
@@ -118,15 +290,6 @@ def is_brace_language(filepath):
 # ============================================================
 
 class LineDiffParser:
-    # Format examples (in comments to avoid parser confusion):
-    #   == FILE: path/file.js ==
-    #   @@ 15-23 REPLACE / @@ END
-    #   @@ 50 DELETE 3
-    #   @@ 60 INSERT / @@ END
-    #   == END FILE ==
-    #   == CREATE FILE: path == / == END FILE ==
-    #   == DELETE FILE: path ==
-
     RE_FILE_START = re.compile(r'^\s*={2,}\s*FILE:\s*(.+?)\s*={2,}\s*$')
     RE_FILE_END = re.compile(r'^\s*={2,}\s*END\s+FILE\s*={2,}\s*$')
     RE_CREATE_FILE = re.compile(r'^\s*={2,}\s*CREATE\s+FILE:\s*(.+?)\s*={2,}\s*$')
@@ -382,7 +545,8 @@ class LineDiffEngine:
 
                 # Brace balance check after this REPLACE
                 if do_brace:
-                    brace_ok, brace_msg = check_brace_balance('\n'.join(file_lines))
+                    joined = '\n'.join(file_lines)
+                    brace_ok, brace_msg = check_brace_balance(joined)
                     if not brace_ok:
                         # Rollback
                         file_lines[s:s + len(new_lines)] = saved_old
@@ -458,7 +622,6 @@ class LineDiffEngine:
         parsed, file_ops = self.parser.parse(diff_text)
         results = []
 
-        # Process file operations first (CREATE / DELETE)
         for fop in file_ops:
             if fop['op'] == 'create':
                 fp = fop['path']
@@ -468,7 +631,6 @@ class LineDiffEngine:
                     full_path = fp
                 try:
                     os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                    # Backup existing file before overwrite
                     if os.path.isfile(full_path):
                         bp = full_path + '.bak'
                         n = 1
@@ -536,7 +698,6 @@ class LineDiffEngine:
                         'messages': ["[X] not found for delete: " + fp],
                         'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
 
-        # Process edit commands
         for fp, cmds in parsed.items():
             if fp == '__current_file__':
                 results.append({
@@ -567,7 +728,6 @@ class LineDiffEngine:
                     'encoding': 'utf-8', 'has_bom': False, 'line_ending': '\n'})
                 continue
 
-            # Set filepath for brace checking
             self._current_filepath = rp
             new_c, msgs = self.apply_to_content(content, cmds)
             self._current_filepath = None
@@ -622,7 +782,6 @@ class LineDiffEngine:
                     n += 1
                 shutil.copy2(r['resolved_path'], bp)
 
-                # Pre-save brace check (final safety net)
                 fext = os.path.splitext(r['resolved_path'])[1].lower()
                 if fext in BRACE_LANGUAGES:
                     brace_ok, brace_msg = check_brace_balance(r['new_content'])
